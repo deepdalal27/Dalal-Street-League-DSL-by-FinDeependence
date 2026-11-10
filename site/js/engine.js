@@ -10,35 +10,59 @@
   E.MIN_STOCKS = 3;
   E.DURATIONS = { day: 'Daily', week: 'Weekly', month: 'Monthly' };
   // In-game coins for each entry amount (1 coin = Rs 1 of virtual buying power).
+  E.ENTRIES = [49, 99, 199, 499, 1000];
   E.COINS = { 49: 50000, 99: 100000, 199: 200000, 499: 500000, 1000: 1000000 };
-  // 1 vs 1: fixed winner prize. DSL commission = both entries minus the prize.
-  E.H2H_PRIZE = { 49: 90, 99: 180, 199: 360, 499: 900, 1000: 1800 };
-  // Leagues: commission (rake) is taken first, the rest is split by rank. split = [fromRank, toRank, share of prize pool for EACH rank].
+  E.MIN_SIZE = 2; E.MAX_SIZE = 100;
+  // size = seats. 'custom' is a private tournament whose creator chooses the seats (2 to 100).
   E.KINDS = {
-    h2h: { label: '1 vs 1', size: 2, entries: [49, 99, 199, 499, 1000] },
-    l10: { label: 'League of 10', size: 10, entries: [49, 99, 199, 499], rake: 0.15, split: [[1, 1, 0.5], [2, 2, 0.3], [3, 3, 0.2]] },
-    m50: { label: 'Mega League 50', size: 50, entries: [49, 99, 199, 499], rake: 0.20, split: [[1, 1, 0.28], [2, 2, 0.16], [3, 3, 0.10], [4, 10, 0.04], [11, 15, 0.036]] }
+    h2h: { label: '1 vs 1', size: 2 },
+    l10: { label: 'League of 10', size: 10 },
+    m50: { label: 'Mega League 50', size: 50 },
+    custom: { label: 'Private tournament', size: null }
   };
 
-  // Prize table for a full contest. prizes[i] = whole-rupee prize for rank i+1.
-  E.prizeTable = function (kind, entry) {
-    var k = E.KINDS[kind];
-    if (!k || k.entries.indexOf(entry) < 0) throw new Error('Unknown contest ' + kind + ' ' + entry);
-    var gross = entry * k.size, prizes = [], bands = [], i;
-    for (i = 0; i < k.size; i++) prizes.push(0);
-    if (kind === 'h2h') {
-      prizes[0] = E.H2H_PRIZE[entry];
-      bands.push({ from: 1, to: 1, each: prizes[0] });
-    } else {
-      var pool = Math.floor(gross * (1 - k.rake));
-      k.split.forEach(function (b) {
-        var each = Math.floor(pool * b[2]);
-        for (var r = b[0]; r <= b[1]; r++) prizes[r - 1] = each;
-        bands.push({ from: b[0], to: b[1], each: each });
-      });
+  // ---- DSL commission (the platform fee), in basis points of all entries. Mirrored by dsl_rake_bp() in supabase/setup.sql. ----
+  //  * Time: money locked for longer earns the players a bigger prize pool, so the fee falls with the length of the contest.
+  //    Daily contests repeat about 20 times a month, so the lower monthly rate still earns less per rupee-day, not more.
+  //  * Size: the more players actually take part, the larger the fee rate (and the entries it applies to).
+  E.RAKE_TIME = { day: 1200, week: 1000, month: 800 };
+  E.RAKE_SIZE = [[2, 0], [5, 100], [10, 200], [25, 300], [50, 500], [100, 600]];   // [up to this many players, extra bp]
+  E.rakeBp = function (n, duration) {
+    var base = E.RAKE_TIME[duration];
+    if (!base) throw new Error('Unknown duration ' + duration);
+    for (var i = 0; i < E.RAKE_SIZE.length; i++) if (n <= E.RAKE_SIZE[i][0]) return base + E.RAKE_SIZE[i][1];
+    throw new Error('Too many players');
+  };
+
+  // ---- Prize plan for the n players who actually joined ----
+  //  * About 40% of the players win something.
+  //  * Top tier (about the top 20%): every rank gets at least 1.9x the entry, more than any 1 vs 1 win pays,
+  //    because finishing there is harder than beating one rival. What is left of the pool goes mostly to the top (weight 1/rank^2).
+  //  * Saver tier (the next 20%): entry back plus 15%.
+  //  * Whatever cannot be paid in whole rupees stays with DSL.
+  E.TOP_BP = 19000; E.SAVER_BP = 11500;
+  E.prizePlan = function (n, entry, duration) {
+    if (n !== Math.floor(n) || n < E.MIN_SIZE || n > E.MAX_SIZE) throw new Error('A contest has ' + E.MIN_SIZE + ' to ' + E.MAX_SIZE + ' players');
+    if (E.ENTRIES.indexOf(entry) < 0) throw new Error('Unknown entry ' + entry);
+    var rake = E.rakeBp(n, duration), gross = entry * n, pool = Math.floor(gross * (10000 - rake) / 10000);
+    var top = Math.max(1, Math.floor((2 * n + 5) / 10)), winners = Math.max(top, Math.floor((4 * n + 5) / 10)), savers = winners - top;
+    var base = Math.floor(entry * E.TOP_BP / 10000), saver = Math.floor(entry * E.SAVER_BP / 10000);
+    var extra = pool - savers * saver - top * base, prizes = [], r;
+    for (r = 0; r < n; r++) prizes.push(0);
+    if (extra < 0) { prizes[0] = pool; winners = 1; }            // 1 vs 1: the winner takes the whole pool
+    else {
+      var w = [], sum = 0;
+      for (r = 1; r <= top; r++) { w.push(Math.floor(1000000 / (r * r))); sum += w[r - 1]; }
+      for (r = 1; r <= top; r++) prizes[r - 1] = base + Math.floor(extra * w[r - 1] / sum);
+      for (r = top + 1; r <= winners; r++) prizes[r - 1] = saver;
     }
-    var total = prizes.reduce(function (a, b) { return a + b; }, 0);
-    return { kind: kind, entry: entry, size: k.size, gross: gross, prizes: prizes, bands: bands, prizeTotal: total, commission: gross - total, winners: prizes.filter(function (p) { return p > 0; }).length };
+    var bands = [], total = 0;
+    for (r = 0; r < n && prizes[r] > 0; r++) {
+      total += prizes[r];
+      if (bands.length && bands[bands.length - 1].each === prizes[r]) bands[bands.length - 1].to = r + 1;
+      else bands.push({ from: r + 1, to: r + 1, each: prizes[r] });
+    }
+    return { n: n, entry: entry, duration: duration, rakeBp: rake, gross: gross, pool: pool, prizes: prizes, bands: bands, prizeTotal: total, commission: gross - total, minCommission: gross - pool, winners: winners };
   };
 
   var r2 = function (n) { return Math.round(n * 100) / 100; };
@@ -46,9 +70,8 @@
 
   // Rank players by final portfolio value (highest first). Players with the same value share the prizes of the ranks they cover.
   // Whatever cannot be split into whole rupees stays with DSL, so commission never goes below the designed amount.
-  E.settle = function (kind, entry, values) {
-    var t = E.prizeTable(kind, entry);
-    if (values.length !== t.size) throw new Error('Contest needs ' + t.size + ' players, got ' + values.length);
+  E.settle = function (entry, duration, values) {
+    var t = E.prizePlan(values.length, entry, duration);
     var order = values.map(function (v, i) { return { idx: i, value: r2(v) }; }).sort(function (a, b) { return b.value - a.value || a.idx - b.idx; });
     var rows = [], paid = 0, i = 0;
     while (i < order.length) {
@@ -62,6 +85,9 @@
     }
     return { rows: rows, paid: paid, commission: t.gross - paid, gross: t.gross };
   };
+
+  // Entries close when the market next opens after the day a contest was created: 09:15 IST on the next weekday.
+  E.lockAt = function (startDate) { return new Date(E.nextWeekday(startDate) + 'T03:45:00Z'); };
 
   // ---- Portfolio ----
   // holdings: [{ s: symbol, q: whole shares, p: buy price }]

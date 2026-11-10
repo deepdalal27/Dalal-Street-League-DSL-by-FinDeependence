@@ -11,7 +11,7 @@
   var inr = function (n) { n = Number(n) || 0; return (n < 0 ? '-' : '') + '₹' + num(Math.abs(n), Math.abs(n) % 1 ? 2 : 0); };
   var px2 = function (n) { return '₹' + num(n, 2); };
   var fmtDate = function (d) { return new Date(d + 'T00:00:00Z').toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }); };
-  var fmtTs = function (t) { return new Date(t).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); };
+  var fmtTs = function (t) { return new Date(t).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }); };   // always Indian time
   var pct = function (n) { return '<span class="' + (n > 0 ? 'up' : n < 0 ? 'down' : '') + '">' + (n > 0 ? '+' : '') + num(n, 2) + '%</span>'; };
 
   var sb = window.supabase.createClient(CFG.url, CFG.anon);
@@ -29,14 +29,17 @@
   }
 
   // ---------- state ----------
-  var view = 'play', draft = null, fk = 'h2h', fd = 'day', sq = '', sec = '', mq = '', ownerTab = 'report', busy = false, booted = false;
+  var view = 'play', draft = null, fk = 'h2h', fd = 'day', cSize = 5, cEntry = 99, sq = '', sec = '', mq = '', ownerTab = 'report', busy = false, booted = false;
   var P = null;                                     // price view (null until prices load)
   var D = { user: null, profile: null, balance: 0, settings: { upi: '', payee: 'CA Deep Dalal' }, txns: [], requests: [], entries: [], open: [] };
   var O = { report: null, requests: [], players: [], contests: [] };   // owner data
   var closeCache = {};
   var me = function () { return D.profile; };
   var isOwner = function () { return !!(D.profile && D.profile.is_owner); };
-  var cname = function (c) { return E.KINDS[c.kind].label + ' · ' + inr(c.entry) + ' · ' + E.DURATIONS[c.duration]; };
+  var isOpen = function (c) { return c.status === 'open' && Date.now() < new Date(c.lock_at).getTime(); };          // still taking entries
+  var kname = function (c) { return c.kind === 'custom' ? 'Private tournament of ' + c.size : E.KINDS[c.kind].label; };
+  var rankName = function (b) { return b.from === b.to ? 'Rank ' + b.from : 'Ranks ' + b.from + ' to ' + b.to; };
+  var cname = function (c) { return kname(c) + ' · ' + inr(c.entry) + ' · ' + E.DURATIONS[c.duration]; };
 
   // ---------- small UI helpers (same pattern as the FinDeependence IPO Deal Desk) ----------
   var tt;
@@ -86,7 +89,7 @@
     return q(sb.from('dsl_prices').select('closes').eq('d', d).maybeSingle()).then(function (r) { closeCache[d] = r ? r.closes : {}; return closeCache[d]; });
   }
   function loadOpen() {
-    return q(sb.from('dsl_contests').select('kind,entry,duration,end_date,joined,size').eq('status', 'open').eq('private', false)).then(function (r) { D.open = r; });
+    return q(sb.from('dsl_contests').select('kind,entry,duration,end_date,joined,size,lock_at,status').eq('status', 'open').eq('private', false)).then(function (r) { D.open = r; });
   }
   function loadMe() {
     if (!D.user) { D.profile = null; return Promise.resolve(); }
@@ -160,7 +163,7 @@
     act(function () {
       return q(sb.rpc('dsl_mobile_taken', { p_mobile: mobile })).then(function (taken) {
         if (taken) throw new Error('This mobile number is already registered. Use "I already have an account".');
-        return q(sb.auth.signUp({ email: email, password: pw, options: { data: { name: name, mobile: mobile } } }));
+        return q(sb.auth.signUp({ email: email, password: pw, options: { data: { name: name, mobile: mobile, ref: refCode || '' } } }));
       }).then(function (r) {
         if (!r.session) return { confirm: true };
         D.user = r.session.user; return reload();
@@ -196,58 +199,80 @@
       };
     });
   }
-  var inviteCode = null;
+  var inviteCode = null, refCode = null;
   function afterLogin() {
     if (inviteCode && me()) { var code = inviteCode; inviteCode = null; openChallenge(code); }
     render();
   }
   function openChallenge(code) {
     q(sb.rpc('dsl_challenge_info', { p_code: code })).then(function (i) {
-      if (!i) return toast('This challenge link is not valid.', true);
-      if (i.mine) { view = 'mine'; render(); return toast('You are already in this challenge.'); }
-      if (!i.open) return toast('This challenge is already full or has ended.', true);
-      startDraft(i.kind, i.entry, i.duration, { code: code, end: i.end_date, by: i.by }); render();
+      if (!i) return toast('This invite link is not valid.', true);
+      if (i.mine) { view = 'mine'; render(); return toast('You are already in this contest.'); }
+      if (!i.open) return toast('This contest is full or its entries have closed.', true);
+      startDraft(i.kind, i.entry, i.duration, { code: code, end: i.end_date, by: i.by, size: i.size }); render();
     }, fail);
   }
 
   // ---------- lobby ----------
   function seg(id, opts, cur) { return '<div class="seg">' + opts.map(function (o) { return '<button data-act="seg" data-id="' + id + '" data-val="' + o[0] + '" class="' + (o[0] === cur ? 'on' : '') + '" data-cat="">' + esc(o[1]) + '</button>'; }).join('') + '</div>'; }
   function lobbyHtml() {
-    var k = E.KINDS[fk], end = E.endDate(E.istToday(), fd);
-    var cards = k.entries.map(function (en) {
-      var t = E.prizeTable(fk, en), same = function (c) { return c.kind === fk && c.entry === en && c.duration === fd && c.end_date === end; };
-      var mineIn = D.entries.some(function (e) { return e.c.status === 'open' && !e.c.private && same(e.c); });
+    var end = E.endDate(E.istToday(), fd), lock = E.lockAt(E.istToday());
+    var filters = '<div class="filters">' + seg('fk', Object.keys(E.KINDS).map(function (x) { return [x, E.KINDS[x].label]; }), fk) + seg('fd', Object.keys(E.DURATIONS).map(function (x) { return [x, E.DURATIONS[x]]; }), fd) + '</div>';
+    var foot = '<p class="muted small" style="margin-top:12px">You play against real players. Entries close at ' + esc(fmtTs(lock)) + ' (when the market next opens). The contest then runs with everyone who joined, and prizes follow the number of players. If nobody else joins, your entry comes back in full.</p>' + inviteAppHtml();
+    if (fk === 'custom') return '<div class="lbl2">Play with people you know</div><h2 class="big">Private tournament · ' + esc(E.DURATIONS[fd]) + '</h2>' + filters + customHtml(end) + foot;
+    var k = E.KINDS[fk];
+    var cards = E.ENTRIES.map(function (en) {
+      var t = E.prizePlan(k.size, en, fd), same = function (c) { return c.kind === fk && c.entry === en && c.duration === fd && c.end_date === end && isOpen(c); };
+      var mineIn = D.entries.some(function (e) { return !e.c.private && same(e.c); });
       var waiting = D.open.filter(same).reduce(function (a, c) { return a + c.joined; }, 0);
-      return '<div class="ccard"><div class="top"><div><div class="lbl2">Entry</div><div class="entry">' + inr(en) + '</div></div><div class="win">' + (fk === 'h2h' ? 'Winner gets<br>' + inr(t.prizes[0]) : '1st prize ' + inr(t.prizes[0]) + '<br>' + t.winners + ' winners') + '</div></div>' +
-        '<div class="meta">' + fact('Coins to invest', num(E.COINS[en])) + fact('Players', String(k.size), waiting ? waiting + ' waiting now' + (mineIn ? ' (you too)' : '') : 'Be the first to join') + fact('Ends at close of', fmtDate(end)) + fact('Prize pool', inr(t.prizeTotal)) + '</div>' +
+      return '<div class="ccard"><div class="top"><div><div class="lbl2">Entry</div><div class="entry">' + inr(en) + '</div></div><div class="win">' + (fk === 'h2h' ? 'Winner gets<br>' + inr(t.prizes[0]) : '1st prize up to ' + inr(t.prizes[0]) + '<br>' + t.winners + ' of ' + k.size + ' win') + '</div></div>' +
+        '<div class="meta">' + fact('Coins to invest', num(E.COINS[en])) + fact('Players', (fk === 'h2h' ? '' : 'Up to ') + k.size, waiting ? waiting + ' joined so far' + (mineIn ? ' (you too)' : '') : 'Be the first to join') + fact('Ends at close of', fmtDate(end)) + fact(fk === 'h2h' ? 'Prize' : 'Prizes if full', inr(t.prizeTotal)) + '</div>' +
         '<div class="row"><button class="primary" data-act="play" data-entry="' + en + '"' + (P ? '' : ' disabled') + '>Play</button>' + (fk === 'h2h' ? '<button data-act="invite" data-entry="' + en + '"' + (P ? '' : ' disabled') + '>Challenge a friend</button>' : '<button data-act="prizes" data-entry="' + en + '">Prize table</button>') + '</div></div>';
     }).join('');
-    return '<div class="lbl2">Pick a contest</div><h2 class="big">' + esc(k.label) + ' · ' + esc(E.DURATIONS[fd]) + '</h2>' +
-      '<div class="filters">' + seg('fk', Object.keys(E.KINDS).map(function (x) { return [x, E.KINDS[x].label]; }), fk) + seg('fd', Object.keys(E.DURATIONS).map(function (x) { return [x, E.DURATIONS[x]]; }), fd) + '</div>' +
-      '<div class="cards">' + cards + '</div>' +
-      '<p class="muted small" style="margin-top:12px">You play against real players. A contest starts when all its seats are taken. If it does not fill by its last day, it is cancelled and your entry comes back to your wallet in full.</p>';
+    return '<div class="lbl2">Pick a contest</div><h2 class="big">' + esc(k.label) + ' · ' + esc(E.DURATIONS[fd]) + '</h2>' + filters + '<div class="cards">' + cards + '</div>' + foot;
   }
-  function prizeBox(kind, entry) {
-    var t = E.prizeTable(kind, entry);
-    modal('<h2>' + esc(E.KINDS[kind].label) + ' · ' + inr(entry) + ' entry</h2><div class="tbl"><table><thead><tr><th>Rank</th><th class="num">Prize each</th></tr></thead><tbody>' +
-      t.bands.map(function (b) { return '<tr><td>' + (b.from === b.to ? 'Rank ' + b.from : 'Rank ' + b.from + ' to ' + b.to) + '</td><td class="num">' + inr(b.each) + '</td></tr>'; }).join('') +
-      '<tr class="tot"><td>Total prizes (' + t.winners + ' winners of ' + t.size + ')</td><td class="num">' + inr(t.prizeTotal) + '</td></tr></tbody></table></div><p class="muted small">If players finish on exactly the same value, they share the prizes of the ranks they cover equally.</p><div class="row" style="justify-content:flex-end"><button data-close>Close</button></div>');
+  function planTable(t) {
+    return '<div class="tbl"><table><thead><tr><th>Rank</th><th class="num">Prize each</th><th class="num">Times the entry</th></tr></thead><tbody>' +
+      t.bands.map(function (b) { return '<tr><td>' + rankName(b) + '</td><td class="num">' + inr(b.each) + '</td><td class="num">' + num(b.each / t.entry, 2) + 'x</td></tr>'; }).join('') +
+      '<tr class="tot"><td>' + t.winners + ' of ' + t.n + ' players win</td><td class="num">' + inr(t.prizeTotal) + '</td><td></td></tr></tbody></table></div>';
+  }
+  function customHtml(end) {
+    var t = E.prizePlan(cSize, cEntry, fd);
+    return '<div class="two"><div class="panel"><h3 class="sec" style="margin-top:0">Set up your tournament</h3><p class="muted">Only people with your link can join. You choose the seats and the entry; everyone gets the same coins.</p>' +
+      '<div class="form" style="background:transparent;border:none;padding:0"><label>Number of players (2 to 100)<input id="cSize" type="number" min="2" max="100" step="1" value="' + cSize + '" inputmode="numeric"></label>' +
+      '<label>Entry for each player<select id="cEntry">' + E.ENTRIES.map(function (en) { return '<option value="' + en + '"' + (en === cEntry ? ' selected' : '') + '>' + inr(en) + ' · ' + num(E.COINS[en]) + ' coins</option>'; }).join('') + '</select></label></div>' +
+      '<div class="facts">' + fact('Length', esc(E.DURATIONS[fd])) + fact('Ends at close of', fmtDate(end)) + fact('Coins each', num(E.COINS[cEntry])) + '</div>' +
+      '<div class="row"><button class="primary" data-act="customGo"' + (P ? '' : ' disabled') + '>Pick my stocks and get the link</button></div></div>' +
+      '<div><h3 class="sec" style="margin-top:0">Prizes with all ' + cSize + ' players</h3><div id="cPlan">' + planTable(t) + '</div><p class="muted small" style="margin-top:8px">If fewer friends join, the tournament still runs and the prize table adjusts to the number of players.</p></div></div>';
+  }
+  function inviteAppHtml() {
+    var u = me(); if (!u || !u.ref_code) return '';
+    var link = location.origin + location.pathname + '?ref=' + encodeURIComponent(u.ref_code);
+    var msg = 'Play Dalal Street League by FinDeependence with me: build a stock portfolio with virtual coins and beat your rivals. ' + link;
+    return '<div class="panel" style="margin-top:16px"><div class="lbl2">Invite friends</div><p style="margin:6px 0 10px">Share your link. Friends who sign up with it are counted as invited by you.</p><div class="upi" id="refLink">' + esc(link) + '</div>' +
+      '<div class="row" style="margin-top:10px"><button data-act="copy" data-text="' + esc(link) + '">Copy link</button><a class="fakebtn" target="_blank" rel="noopener" href="https://wa.me/?text=' + encodeURIComponent(msg) + '">Share on WhatsApp</a></div></div>';
+  }
+  function prizeBox(n, entry, duration, note) {
+    var t = E.prizePlan(n, entry, duration);
+    modal('<h2>' + inr(entry) + ' entry · ' + n + ' players · ' + esc(E.DURATIONS[duration]) + '</h2>' + planTable(t) +
+      '<p class="muted small">' + esc(note || '') + ' If players finish on exactly the same value, they share the prizes of the ranks they cover equally.</p><div class="row" style="justify-content:flex-end"><button data-close>Close</button></div>');
   }
   var challengeLink = function (code) { return location.origin + location.pathname + '?j=' + encodeURIComponent(code); };
+  function copyText(text) { (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () { toast('Link copied'); }, function () { toast('Select the link and copy it.', true); }); }
   function shareBox(c) {
-    var link = challengeLink(c.code);
-    var msg = 'I challenge you on Dalal Street League by FinDeependence! 1 vs 1, ' + inr(c.entry) + ' entry, ' + E.DURATIONS[c.duration].toLowerCase() + ' contest. Pick your stocks: ' + link;
-    modal('<h2>Send this link to your friend</h2><p>Your friend signs up, picks stocks for the same ' + inr(c.entry) + ' contest, and the better portfolio at the close of ' + fmtDate(c.end_date) + ' wins ' + inr(E.H2H_PRIZE[c.entry]) + '. If your friend does not join in time, your entry comes back in full.</p><div class="upi" id="invLink">' + esc(link) + '</div>' +
-      '<div class="row" style="justify-content:flex-end;margin-top:12px"><button data-close>Close</button><button id="invCopy">Copy link</button><a class="fakebtn" target="_blank" rel="noopener" href="https://wa.me/?text=' + encodeURIComponent(msg) + '">Share on WhatsApp</a></div>', function (b) {
-      $('#invCopy', b).onclick = function () { (navigator.clipboard ? navigator.clipboard.writeText(link) : Promise.reject()).then(function () { toast('Link copied'); }, function () { toast('Select the link and copy it.', true); }); };
-    });
+    var link = challengeLink(c.code), what = c.size === 2 ? '1 vs 1' : (c.private ? 'a private tournament of up to ' : 'a league of up to ') + c.size + ' players';
+    var msg = 'Join me on Dalal Street League by FinDeependence! ' + what.charAt(0).toUpperCase() + what.slice(1) + ', ' + inr(c.entry) + ' entry, ' + E.DURATIONS[c.duration].toLowerCase() + ' contest. Pick your stocks before ' + fmtTs(c.lock_at) + ': ' + link;
+    modal('<h2>Invite friends to this contest</h2><p>Anyone who opens this link joins the same contest: ' + esc(what) + ', ' + inr(c.entry) + ' entry, ending at the close of ' + fmtDate(c.end_date) + '.</p><div class="upi" id="invLink">' + esc(link) + '</div>' +
+      '<p class="muted small">Entries close at ' + esc(fmtTs(c.lock_at)) + '. The contest runs with everyone who joined by then; if nobody else joins, your entry comes back in full.</p>' +
+      '<div class="row" style="justify-content:flex-end;margin-top:12px"><button data-close>Close</button><button data-act="copy" data-text="' + esc(link) + '">Copy link</button><a class="fakebtn" target="_blank" rel="noopener" href="https://wa.me/?text=' + encodeURIComponent(msg) + '">Share on WhatsApp</a></div>');
   }
 
   // ---------- portfolio builder ----------
   function startDraft(kind, entry, duration, opt) {
-    if (!E.KINDS[kind] || E.KINDS[kind].entries.indexOf(entry) < 0 || !E.DURATIONS[duration] || !P) return;
     opt = opt || {};
-    draft = { kind: kind, entry: entry, duration: duration, coins: E.COINS[entry], private: !!opt.private, code: opt.code || null, by: opt.by || null, end: opt.end || E.endDate(E.istToday(), duration), h: {} };
+    var size = E.KINDS[kind] && (E.KINDS[kind].size || opt.size);
+    if (!size || size < E.MIN_SIZE || size > E.MAX_SIZE || E.ENTRIES.indexOf(entry) < 0 || !E.DURATIONS[duration] || !P) return;
+    draft = { kind: kind, entry: entry, duration: duration, size: size, coins: E.COINS[entry], private: !!opt.private, code: opt.code || null, by: opt.by || null, end: opt.end || E.endDate(E.istToday(), duration), h: {} };
     view = 'play'; sq = ''; sec = '';
   }
   var draftHoldings = function () { return Object.keys(draft.h).filter(function (s) { return P.px[s] > 0; }).map(function (s) { return { s: s, q: draft.h[s], p: P.px[s] }; }); };
@@ -261,16 +286,16 @@
     return list.length ? list.map(function (u) { return stockBtn(u, !!draft.h[u.s]); }).join('') : '<p class="muted small">No stock matches.</p>';
   }
   function builderHtml() {
-    var hs = draftHoldings(), cost = E.cost(hs), left = E.r2(draft.coins - cost), t = E.prizeTable(draft.kind, draft.entry);
+    var hs = draftHoldings(), cost = E.cost(hs), left = E.r2(draft.coins - cost), t = E.prizePlan(draft.size, draft.entry, draft.duration);
     var secs = Array.from(new Set(U.map(function (u) { return u.sec; }))).sort();
     var rows = hs.map(function (h) {
       return '<tr><td><b>' + esc(h.s) + '</b><br><span class="muted small">' + esc(BY[h.s].n) + '</span></td><td class="num">' + num(h.q) + '</td><td class="num">' + px2(h.p) + '</td><td class="num">' + num(h.q * h.p, 2) + '</td><td class="num">' + num(h.q * h.p / draft.coins * 100, 1) + '%</td><td><button data-act="buy" data-s="' + esc(h.s) + '">Change</button> <button class="danger" data-act="drop" data-s="' + esc(h.s) + '">Remove</button></td></tr>';
     }).join('');
-    var err = E.validate(hs, draft.coins), tag = draft.code ? ' · challenge from ' + esc(draft.by || 'a friend') : draft.private ? ' · friend challenge' : '';
+    var err = E.validate(hs, draft.coins), tag = draft.code ? ' · invited by ' + esc(draft.by || 'a friend') : draft.private ? ' · private' : '';
     return '<div class="apply"><aside class="rail"><div class="rail-head"><h2>Stocks</h2><select id="secSel" aria-label="Sector"><option value="">All sectors</option>' + secs.map(function (x) { return '<option' + (x === sec ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('') + '</select></div>' +
       '<input type="search" id="stockSearch" placeholder="Search stock" aria-label="Search stock" value="' + esc(sq) + '"><div class="ipo-list" id="stockRail">' + railList() + '</div></aside>' +
-      '<div class="panel"><div class="panel-head"><div><div class="lbl2">Build your portfolio' + tag + '</div><h2>' + esc(E.KINDS[draft.kind].label) + ' · ' + inr(draft.entry) + ' · ' + esc(E.DURATIONS[draft.duration]) + '</h2></div><button data-act="cancelDraft">Back to contests</button></div>' +
-      '<div class="facts">' + fact('Coins given', num(draft.coins)) + fact('Invested', num(cost, 2)) + fact('Coins left', '<span class="' + (left < 0 ? 'down' : '') + '">' + num(left, 2) + '</span>', 'Unused coins stay as cash') + fact(draft.kind === 'h2h' ? 'You win' : '1st prize', inr(t.prizes[0])) + fact('Ends at close of', fmtDate(draft.end)) + '</div>' +
+      '<div class="panel"><div class="panel-head"><div><div class="lbl2">Build your portfolio' + tag + '</div><h2>' + esc(kname(draft)) + ' · ' + inr(draft.entry) + ' · ' + esc(E.DURATIONS[draft.duration]) + '</h2></div><button data-act="cancelDraft">Back to contests</button></div>' +
+      '<div class="facts">' + fact('Coins given', num(draft.coins)) + fact('Invested', num(cost, 2)) + fact('Coins left', '<span class="' + (left < 0 ? 'down' : '') + '">' + num(left, 2) + '</span>', 'Unused coins stay as cash') + fact(draft.size === 2 ? 'You win' : '1st prize if full', inr(t.prizes[0])) + fact('Ends at close of', fmtDate(draft.end)) + '</div>' +
       '<div class="meter' + (left < 0 ? ' over' : '') + '"><i style="width:' + Math.min(100, cost / draft.coins * 100) + '%"></i></div>' +
       (hs.length ? '<div class="tbl"><table><thead><tr><th>Stock</th><th class="num">Shares</th><th class="num">Buy price</th><th class="num">Coins</th><th class="num">Weight</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>'
         : '<div class="empty"><b>No stocks yet</b><span>Tap a stock on the list to buy it with your coins. Pick at least ' + E.MIN_STOCKS + '.</span></div>') +
@@ -306,15 +331,15 @@
       return modal('<h2>Add money to play</h2><p>This contest needs ' + inr(draft.entry) + ' and your wallet has ' + inr(D.balance) + '. Your stock picks are kept while you add money.</p><div class="row" style="justify-content:flex-end"><button data-close>Not now</button><button class="primary" id="goWallet">Go to wallet</button></div>', function (b, close) { $('#goWallet', b).onclick = function () { close(); view = 'wallet'; render(); }; });
     }
     var d = draft;
-    confirmBox('Join <b>' + esc(E.KINDS[d.kind].label) + ' · ' + esc(E.DURATIONS[d.duration]) + '</b> for <b>' + inr(d.entry) + '</b>? Your ' + hs.length + ' stocks are locked until the close of ' + fmtDate(d.end) + '.', function () {
+    confirmBox('Join <b>' + esc(kname(d)) + ' · ' + esc(E.DURATIONS[d.duration]) + '</b> for <b>' + inr(d.entry) + '</b>? Your ' + hs.length + ' stocks are locked until the close of ' + fmtDate(d.end) + '.', function () {
       var res;
       act(function () {
-        return q(sb.rpc('dsl_join', { p_kind: d.kind, p_entry: d.entry, p_duration: d.duration, p_picks: hs.map(function (h) { return { s: h.s, q: h.q }; }), p_private: d.private, p_code: d.code }))
+        return q(sb.rpc('dsl_join', { p_kind: d.kind, p_entry: d.entry, p_duration: d.duration, p_picks: hs.map(function (h) { return { s: h.s, q: h.q }; }), p_private: d.private, p_code: d.code, p_size: d.kind === 'custom' && !d.code ? d.size : null }))
           .then(function (r) { res = r; return reload(); });
       }, function () {
         draft = null; view = 'mine'; render();
-        if (d.private && res.code) shareBox({ code: res.code, entry: d.entry, duration: d.duration, end_date: res.end_date });
-        else toast(res.joined >= res.size ? 'You are in and the contest is full. Result at the close of ' + fmtDate(res.end_date) + '.' : 'You are in! Waiting for ' + (res.size - res.joined) + ' more player(s).');
+        if (res.private && res.joined < res.size && !d.code) shareBox({ code: res.code, entry: d.entry, duration: d.duration, end_date: res.end_date, size: res.size, private: true, lock_at: res.lock_at });
+        else toast(res.joined >= res.size ? 'You are in and the contest is full. Result at the close of ' + fmtDate(res.end_date) + '.' : 'You are in! ' + res.joined + ' of ' + res.size + ' joined. Invite friends from My Contests.');
       });
     }, 'Confirm and pay ' + inr(d.entry));
   }
@@ -322,7 +347,7 @@
   // ---------- my contests ----------
   var myValue = function (e) { return e.c.status === 'settled' && e.value != null ? Number(e.value) : E.value(e.holdings, Number(e.cash), P ? P.px : null); };
   function statusPill(c, e) {
-    if (c.status === 'open') return pill('pending', 'Waiting ' + c.joined + '/' + c.size);
+    if (c.status === 'open') return isOpen(c) ? pill('pending', 'Open ' + c.joined + '/' + c.size) : pill('pending', 'Entries closed');
     if (c.status === 'live') return pill('live', 'Live');
     if (c.status === 'cancelled') return pill('done', 'Cancelled · refunded');
     return e && e.prize > 0 ? pill('won', 'Won ' + inr(e.prize)) : pill('done', 'Finished');
@@ -332,9 +357,9 @@
     if (!list.length) return '<div class="panel empty"><b>No contests yet</b><span>Join your first contest to see it here.</span><button class="primary" data-act="go" data-v="play">See contests</button></div>';
     var card = function (e) {
       var c = e.c, v = myValue(e), done = c.status === 'settled';
-      return '<div class="ccard"><div class="top"><div><div class="lbl2">' + esc(E.KINDS[c.kind].label) + ' · ' + esc(E.DURATIONS[c.duration]) + (c.private ? ' · friend' : '') + '</div><div class="entry">' + inr(c.entry) + '</div></div><div>' + statusPill(c, e) + '</div></div>' +
-        '<div class="meta">' + fact(done ? 'Final rank' : 'Players', done ? e.rank + ' of ' + c.size : c.joined + ' of ' + c.size) + fact('Return', pct(E.returnPct(v, c.coins))) + fact('Portfolio', num(v, 2)) + fact(done ? 'Settled on' : 'Ends at close of', fmtDate(done ? c.settle_date : c.end_date)) + '</div>' +
-        '<div class="row"><button data-act="detail" data-id="' + c.id + '">' + (c.status === 'open' ? 'View my portfolio' : 'View leaderboard') + '</button>' + (c.status === 'open' && c.private && c.code ? '<button data-act="share" data-id="' + c.id + '">Share link</button>' : '') + '</div></div>';
+      return '<div class="ccard"><div class="top"><div><div class="lbl2">' + esc(kname(c)) + ' · ' + esc(E.DURATIONS[c.duration]) + (c.private && c.kind !== 'custom' ? ' · private' : '') + '</div><div class="entry">' + inr(c.entry) + '</div></div><div>' + statusPill(c, e) + '</div></div>' +
+        '<div class="meta">' + fact(done ? 'Final rank' : 'Players', done ? e.rank + ' of ' + c.joined : c.joined + (c.status === 'open' ? ' of ' + c.size : '')) + fact('Return', pct(E.returnPct(v, c.coins))) + fact('Portfolio', num(v, 2)) + fact(done ? 'Settled on' : 'Ends at close of', fmtDate(done ? c.settle_date : c.end_date)) + '</div>' +
+        '<div class="row"><button data-act="detail" data-id="' + c.id + '">' + (c.status === 'open' ? 'View my portfolio' : 'View leaderboard') + '</button>' + (isOpen(c) && c.code ? '<button class="primary" data-act="share" data-id="' + c.id + '">Invite friends</button>' : '') + '</div></div>';
     };
     var run = list.filter(function (e) { return e.c.status === 'open' || e.c.status === 'live'; }), done = list.filter(function (e) { return e.c.status === 'settled' || e.c.status === 'cancelled'; });
     return '<div class="lbl2">My contests</div><h2 class="big">' + run.length + ' running · ' + done.length + ' finished</h2>' +
@@ -349,7 +374,7 @@
     }, function (r) {
       var es = r[0], ref = r[1], rows;
       if (c.status === 'settled') rows = es.map(function (e, i) { return { idx: i, value: Number(e.value), rank: e.rank, prize: e.prize }; }).sort(function (a, b) { return a.rank - b.rank || a.idx - b.idx; });
-      else if (c.status === 'live' && es.length === c.size) rows = E.settle(c.kind, c.entry, es.map(function (e) { return E.value(e.holdings, Number(e.cash), ref); })).rows;
+      else if (c.status === 'live' && es.length === c.joined && es.length >= 2) rows = E.settle(c.entry, c.duration, es.map(function (e) { return E.value(e.holdings, Number(e.cash), ref); })).rows;
       else rows = es.map(function (e, i) { return { idx: i, value: E.value(e.holdings, Number(e.cash), ref), rank: null, prize: 0 }; });
       var mi = es.findIndex(function (e) { return e.uid === uid; }), show = rows.filter(function (x, i) { return i < 15 || x.idx === mi; });
       var lb = show.map(function (x) {
@@ -361,13 +386,14 @@
         var now = ref && ref[h.s] > 0 ? ref[h.s] : h.p;
         return '<tr><td><b>' + esc(h.s) + '</b></td><td class="num">' + num(h.q) + '</td><td class="num">' + px2(h.p) + '</td><td class="num">' + px2(now) + '</td><td class="num">' + pct(E.r2((now / h.p - 1) * 100)) + '</td><td class="num">' + num(E.r2(h.q * (now - h.p)), 2) + '</td></tr>';
       }).join('') : '';
-      var info = c.status === 'open' ? 'Waiting for players: ' + c.joined + ' of ' + c.size + ' have joined. Other portfolios stay hidden until the contest is full. If it does not fill by ' + fmtDate(c.end_date) + ', every entry is returned.'
-        : c.status === 'live' ? 'Standings at the latest prices. The final result uses the official closing prices of ' + fmtDate(c.end_date) + '.'
-        : c.status === 'cancelled' ? 'This contest did not fill, so it was cancelled and every entry was returned in full.'
+      var info = c.status === 'open' ? (isOpen(c) ? c.joined + ' of ' + c.size + ' seats taken. Entries close at ' + fmtTs(c.lock_at) + '. Other portfolios stay hidden until then.' : 'Entries have closed with ' + c.joined + ' player(s). ' + (c.joined >= 2 ? 'The contest is starting.' : 'Nobody else joined, so your entry is being returned.'))
+        : c.status === 'live' ? c.joined + ' players. Standings at the latest prices; the final result uses the official closing prices of ' + fmtDate(c.end_date) + '.'
+        : c.status === 'cancelled' ? 'Nobody else joined this contest, so it was cancelled and the entry was returned in full.'
         : 'Final result on the official closing prices of ' + fmtDate(c.settle_date) + '.';
+      var planNow = c.status === 'open' && c.joined >= 2 ? '<h3 class="sec">Prizes if it starts with ' + c.joined + ' players</h3>' + planTable(E.prizePlan(c.joined, c.entry, c.duration)) : '';
       modal('<h2>' + esc(cname(c)) + ' ' + statusPill(c, pe) + '</h2><p class="muted">' + info + '</p>' +
         '<div class="tbl"><table><thead><tr><th>Rank</th><th>Player</th><th class="num">Portfolio</th><th class="num">Return</th><th class="num">' + (c.status === 'live' ? 'Prize if it ended now' : 'Prize') + '</th></tr></thead><tbody>' + lb + '</tbody></table></div>' +
-        (rows.length > show.length ? '<p class="muted small">Showing the top 15 and your position, out of ' + rows.length + ' players.</p>' : '') +
+        (rows.length > show.length ? '<p class="muted small">Showing the top 15 and your position, out of ' + rows.length + ' players.</p>' : '') + planNow +
         (pe ? '<h3 class="sec">Your portfolio</h3><div class="tbl"><table><thead><tr><th>Stock</th><th class="num">Shares</th><th class="num">Buy</th><th class="num">' + (c.status === 'settled' ? 'Close' : 'Now') + '</th><th class="num">Change</th><th class="num">Gain / loss</th></tr></thead><tbody>' + hold + '<tr class="tot"><td colspan="5">Cash not invested</td><td class="num">' + num(pe.cash, 2) + '</td></tr></tbody></table></div>' : '') +
         '<div class="row" style="justify-content:flex-end;margin-top:12px"><button data-close>Close</button></div>');
     });
@@ -438,17 +464,22 @@
 
   // ---------- rules ----------
   function rulesHtml() {
-    var tbl = function (kind) {
-      var k = E.KINDS[kind];
-      return '<div class="tbl"><table><thead><tr><th>Entry</th><th class="num">Coins</th>' + (kind === 'h2h' ? '<th class="num">Winner gets</th>' : E.prizeTable(kind, k.entries[0]).bands.map(function (b) { return '<th class="num">' + (b.from === b.to ? 'Rank ' + b.from : 'Rank ' + b.from + '–' + b.to) + '</th>'; }).join('')) + '</tr></thead><tbody>' +
-        k.entries.map(function (en) { var t = E.prizeTable(kind, en); return '<tr><td>' + inr(en) + '</td><td class="num">' + num(E.COINS[en]) + '</td>' + t.bands.map(function (b) { return '<td class="num">' + inr(b.each) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table></div>';
+    var tbl = function (n) {
+      var cols = E.prizePlan(n, E.ENTRIES[0], fd).bands;
+      return '<div class="tbl"><table><thead><tr><th>Entry</th>' + cols.map(function (b) { return '<th class="num">' + (n === 2 ? 'Winner gets' : rankName(b)) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+        E.ENTRIES.map(function (en) { var t = E.prizePlan(n, en, fd); return '<tr><td>' + inr(en) + '</td>' + t.bands.map(function (b) { return '<td class="num">' + inr(b.each) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table></div>';
     };
+    var small = function (n) { var t = E.prizePlan(n, 99, fd); return '<tr><td>' + n + ' players</td><td class="num">' + t.winners + '</td><td class="num">' + inr(t.prizes[0]) + ' (' + num(t.prizes[0] / 99, 2) + 'x)</td><td class="num">' + inr(t.prizes[t.winners - 1]) + '</td></tr>'; };
     return '<div class="lbl2">How it works</div><h2 class="big">Rules and prizes</h2><div class="two"><div class="panel"><h3 class="sec" style="margin-top:0">How to play</h3><ol class="steps">' +
       '<li>Sign up with your name, email and mobile number.</li><li>Add money to your wallet. You pay to the UPI ID shown and your wallet is credited once the payment is confirmed.</li>' +
-      '<li>Pick a contest: 1 vs 1, League of 10 or Mega League 50, for a day, a week or a month. You can also challenge a friend 1 vs 1 with a link.</li><li>You get virtual coins (1 coin = ₹1 of buying power in the game). Buy at least ' + E.MIN_STOCKS + ' stocks at the latest price. Coins you do not use stay as cash.</li>' +
-      '<li>Your picks are locked when you confirm. On the last day, every portfolio is valued at the official NSE closing prices.</li><li>The highest portfolio value wins. Prizes go straight to the winners\' wallets.</li></ol>' +
-      '<h3 class="sec">Fair play</h3><ul class="plain"><li>Everyone in a contest gets the same number of coins.</li><li>Other players cannot see your stocks until the contest is full.</li><li>A contest that does not fill by its last day is cancelled and every entry is returned in full.</li><li>If players finish on exactly the same value, they share the prizes of the ranks they cover equally.</li><li>If the market is closed on the last day, the next trading day\'s closing prices are used.</li><li>Coins are only for the game. They cannot be withdrawn and are not real shares.</li></ul></div>' +
-      '<div><h3 class="sec" style="margin-top:0">1 vs 1</h3>' + tbl('h2h') + '<h3 class="sec">League of 10 (top 3 win)</h3>' + tbl('l10') + '<h3 class="sec">Mega League 50 (top 15 win)</h3>' + tbl('m50') + '<p class="muted small" style="margin-top:10px">Dalal Street League keeps the rest of the entries as its platform fee.</p></div></div>';
+      '<li>Pick a contest: 1 vs 1, League of 10, Mega League 50, or your own private tournament for 2 to 100 friends. Each runs for a day, a week or a month.</li><li>You get virtual coins (1 coin = ₹1 of buying power in the game). Buy at least ' + E.MIN_STOCKS + ' stocks at the latest price. Coins you do not use stay as cash.</li>' +
+      '<li>Invite friends with the contest link. Entries close when the market next opens (09:15 am on the next trading day).</li><li>On the last day, every portfolio is valued at the official NSE closing prices. The highest value wins and prizes go straight to the winners\' wallets.</li></ol>' +
+      '<h3 class="sec">How prizes are set</h3><ul class="plain"><li>About 4 in every 10 players win a prize.</li><li>The harder the finish, the bigger the prize: everyone in the top 20% of a league gets at least 1.9 times the entry, more than a 1 vs 1 win pays.</li><li>The next 20% get their entry back plus 15%.</li><li>Longer contests pay more: a weekly prize is higher than a daily one, and a monthly prize is higher still.</li><li>A contest runs with the players who joined when entries closed, and the prize table follows that number. If nobody else joined, the entry is returned in full.</li><li>If players finish on exactly the same value, they share the prizes of the ranks they cover equally.</li></ul>' +
+      '<h3 class="sec">Fair play</h3><ul class="plain"><li>Everyone in a contest gets the same number of coins.</li><li>Other players cannot see your stocks until entries close.</li><li>If the market is closed on the last day, the next trading day\'s closing prices are used.</li><li>Coins are only for the game. They cannot be withdrawn and are not real shares.</li></ul></div>' +
+      '<div><div class="filters">' + seg('fd', Object.keys(E.DURATIONS).map(function (x) { return [x, E.DURATIONS[x]]; }), fd) + '</div><h3 class="sec" style="margin-top:0">1 vs 1 · ' + esc(E.DURATIONS[fd]) + '</h3>' + tbl(2) + '<h3 class="sec">League of 10, when full (4 win)</h3>' + tbl(10) + '<h3 class="sec">Mega League 50, when full (20 win)</h3><div class="tbl"><table><thead><tr><th>Rank</th>' + E.ENTRIES.map(function (en) { return '<th class="num">' + inr(en) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+      E.prizePlan(50, 99, fd).prizes.slice(0, 11).map(function (x, i) { return '<tr><td>' + (i === 10 ? 'Ranks 11 to 20' : 'Rank ' + (i + 1)) + '</td>' + E.ENTRIES.map(function (en) { return '<td class="num">' + inr(E.prizePlan(50, en, fd).prizes[i]) + '</td>'; }).join('') + '</tr>'; }).join('') + '</tbody></table></div>' +
+      '<h3 class="sec">Other sizes (₹99 entry)</h3><div class="tbl"><table><thead><tr><th>Players</th><th class="num">Winners</th><th class="num">1st prize</th><th class="num">Last prize</th></tr></thead><tbody>' + [3, 5, 8, 20, 30, 100].map(small).join('') + '</tbody></table></div>' +
+      '<p class="muted small" style="margin-top:10px">Dalal Street League keeps the rest of the entries as its platform fee.</p></div></div>';
   }
 
   // ---------- owner ----------
@@ -462,8 +493,8 @@
   function reportHtml() {
     var s = O.report, kinds = Object.keys(E.KINDS).map(function (k) { return s.by_kind.find(function (x) { return x.kind === k; }) || { kind: k, settled: 0, running: 0, gross: 0, paid: 0, commission: 0 }; });
     var max = Math.max.apply(null, kinds.map(function (k) { return k.commission; }).concat([1]));
-    return '<h3 class="sec" style="margin-top:0">Players</h3><div class="tiles">' + fact('Registered players', num(s.players), s.new_week + ' joined in the last 7 days') + fact('Active players', num(s.active), 'Logged in or played in the last 7 days') + fact('Playing right now', num(s.in_live), 'Players in a running contest') + '</div>' +
-      '<h3 class="sec">Contests</h3><div class="tiles">' + fact('Contests created', num(s.total), s.open + ' filling · ' + s.live + ' live · ' + s.settled + ' finished · ' + s.cancelled + ' cancelled') + fact('Entries collected', inr(s.gross), 'Finished contests') + fact('Prizes paid', inr(s.paid)) + fact('Your commission earned', '<span class="up">' + inr(s.commission) + '</span>', 'Finished contests') + fact('Commission coming', inr(s.commission_coming), 'From live contests') + '</div>' +
+    return '<h3 class="sec" style="margin-top:0">Players</h3><div class="tiles">' + fact('Registered players', num(s.players), s.new_week + ' joined in the last 7 days · ' + (s.invited || 0) + ' came by invite') + fact('Active players', num(s.active), 'Logged in or played in the last 7 days') + fact('Playing right now', num(s.in_live), 'Players in a running contest') + '</div>' +
+      '<h3 class="sec">Contests</h3><div class="tiles">' + fact('Contests created', num(s.total), s.open + ' taking entries · ' + s.live + ' live · ' + s.settled + ' finished · ' + s.cancelled + ' cancelled') + fact('Entries collected', inr(s.gross), 'Finished contests') + fact('Prizes paid', inr(s.paid)) + fact('Your commission earned', '<span class="up">' + inr(s.commission) + '</span>', 'Finished contests') + fact('Commission coming', inr(s.commission_coming), 'From live contests') + '</div>' +
       '<div class="tbl"><table><thead><tr><th>Contest type</th><th class="num">Finished</th><th class="num">Running</th><th class="num">Entries</th><th class="num">Prizes</th><th class="num">Commission</th><th>Share</th></tr></thead><tbody>' + kinds.map(function (k) {
         return '<tr><td>' + esc(E.KINDS[k.kind].label) + '</td><td class="num">' + k.settled + '</td><td class="num">' + k.running + '</td><td class="num">' + inr(k.gross) + '</td><td class="num">' + inr(k.paid) + '</td><td class="num">' + inr(k.commission) + '</td><td><div class="bar-cell"><i style="width:' + Math.round(k.commission / max * 120) + 'px"></i></div></td></tr>';
       }).join('') + '<tr class="tot"><td>Total</td><td class="num">' + s.settled + '</td><td class="num">' + (s.open + s.live) + '</td><td class="num">' + inr(s.gross) + '</td><td class="num">' + inr(s.paid) + '</td><td class="num">' + inr(s.commission) + '</td><td></td></tr></tbody></table></div>' +
@@ -493,15 +524,15 @@
   function playersHtml() {
     if (!O.players.length) return '<p class="muted">No players have signed up yet.</p>';
     var now = Date.now();
-    return '<div class="tbl"><table><thead><tr><th>Player</th><th>Email</th><th>Mobile</th><th>Joined</th><th>Last active</th><th class="num">Contests</th><th class="num">Entries paid</th><th class="num">Prizes won</th><th class="num">Wallet</th></tr></thead><tbody>' + O.players.map(function (u) {
-      return '<tr><td><b>' + esc(u.name) + '</b> ' + (now - new Date(u.last_active) < 7 * 864e5 ? pill('live', 'Active') : pill('done', 'Inactive')) + '</td><td>' + esc(u.email) + '</td><td>' + esc(u.mobile) + '</td><td>' + esc(fmtTs(u.joined)) + '</td><td>' + esc(fmtTs(u.last_active)) + '</td><td class="num">' + u.contests + '</td><td class="num">' + inr(u.entries_paid) + '</td><td class="num">' + inr(u.prizes) + '</td><td class="num">' + inr(u.balance) + '</td></tr>';
+    return '<div class="tbl"><table><thead><tr><th>Player</th><th>Email</th><th>Mobile</th><th>Joined</th><th>Last active</th><th class="num">Contests</th><th class="num">Entries paid</th><th class="num">Prizes won</th><th class="num">Wallet</th><th>Invited by</th><th class="num">Friends invited</th></tr></thead><tbody>' + O.players.map(function (u) {
+      return '<tr><td><b>' + esc(u.name) + '</b> ' + (now - new Date(u.last_active) < 7 * 864e5 ? pill('live', 'Active') : pill('done', 'Inactive')) + '</td><td>' + esc(u.email) + '</td><td>' + esc(u.mobile) + '</td><td>' + esc(fmtTs(u.joined)) + '</td><td>' + esc(fmtTs(u.last_active)) + '</td><td class="num">' + u.contests + '</td><td class="num">' + inr(u.entries_paid) + '</td><td class="num">' + inr(u.prizes) + '</td><td class="num">' + inr(u.balance) + '</td><td>' + esc(u.invited_by || '–') + '</td><td class="num">' + u.friends_invited + '</td></tr>';
     }).join('') + '</tbody></table></div>';
   }
   function contestsHtml() {
     if (!O.contests.length) return '<p class="muted">No contests have been created yet.</p>';
     return '<div class="tbl"><table><thead><tr><th>#</th><th>Contest</th><th>Players</th><th>Started</th><th>Ends / settled</th><th>Status</th><th class="num">Entries</th><th class="num">Prizes</th><th class="num">Commission</th><th></th></tr></thead><tbody>' + O.contests.map(function (c) {
-      var t = E.prizeTable(c.kind, c.entry), done = c.status === 'settled', names = (c.dsl_entries || []).map(function (e) { return e.name; });
-      return '<tr><td>' + c.id + '</td><td>' + esc(cname(c)) + (c.private ? ' · friend' : '') + '</td><td>' + c.joined + '/' + c.size + (names.length <= 3 ? ' · ' + esc(names.join(', ')) : '') + '</td><td>' + fmtDate(c.start_date) + '</td><td>' + fmtDate(done ? c.settle_date : c.end_date) + '</td><td>' + statusPill(c) + '</td><td class="num">' + inr(c.status === 'cancelled' ? 0 : c.entry * c.joined) + '</td><td class="num">' + (done ? inr(c.paid) : '–') + '</td><td class="num">' + (done ? inr(c.commission) : c.status === 'live' ? '(' + inr(t.commission) + ')' : '–') + '</td><td><button data-act="detail" data-id="' + c.id + '">Open</button></td></tr>';
+      var fee = c.joined >= 2 ? E.prizePlan(c.joined, c.entry, c.duration).minCommission : 0, done = c.status === 'settled', names = (c.dsl_entries || []).map(function (e) { return e.name; });
+      return '<tr><td>' + c.id + '</td><td>' + esc(cname(c)) + (c.private && c.kind !== 'custom' ? ' · private' : '') + '</td><td>' + c.joined + '/' + c.size + (names.length <= 3 ? ' · ' + esc(names.join(', ')) : '') + '</td><td>' + fmtDate(c.start_date) + '</td><td>' + fmtDate(done ? c.settle_date : c.end_date) + '</td><td>' + statusPill(c) + '</td><td class="num">' + inr(c.status === 'cancelled' ? 0 : c.entry * c.joined) + '</td><td class="num">' + (done ? inr(c.paid) : '–') + '</td><td class="num">' + (done ? inr(c.commission) : c.status === 'live' ? '(' + inr(fee) + ')' : '–') + '</td><td><button data-act="detail" data-id="' + c.id + '">Open</button></td></tr>';
     }).join('') + '</tbody></table></div>';
   }
   function settingsHtml() {
@@ -514,8 +545,8 @@
       var blob = new Blob(['﻿' + rows.map(function (r) { return r.map(cell).join(','); }).join('\r\n')], { type: 'text/csv' }), a = document.createElement('a');
       a.href = URL.createObjectURL(blob); a.download = 'DSL_FinDeependence_' + kind + '_' + E.istToday() + '.csv'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
     };
-    if (kind === 'players') make([['Name', 'Email', 'Mobile', 'Joined', 'Last active', 'Contests', 'Entries paid', 'Prizes won', 'Wallet balance']].concat(O.players.map(function (u) { return [u.name, u.email, u.mobile, u.joined, u.last_active, u.contests, u.entries_paid, u.prizes, u.balance]; })));
-    else if (kind === 'contests') make([['Contest no.', 'Type', 'Entry', 'Duration', 'Friend challenge', 'Joined', 'Seats', 'Start', 'End', 'Status', 'Settled on', 'Entries collected', 'Prizes paid', 'Commission']].concat(O.contests.map(function (c) { return [c.id, E.KINDS[c.kind].label, c.entry, E.DURATIONS[c.duration], c.private ? 'yes' : '', c.joined, c.size, c.start_date, c.end_date, c.status, c.settle_date || '', c.gross == null ? '' : c.gross, c.paid == null ? '' : c.paid, c.commission == null ? '' : c.commission]; })));
+    if (kind === 'players') make([['Name', 'Email', 'Mobile', 'Joined', 'Last active', 'Contests', 'Entries paid', 'Prizes won', 'Wallet balance', 'Invited by', 'Friends invited']].concat(O.players.map(function (u) { return [u.name, u.email, u.mobile, u.joined, u.last_active, u.contests, u.entries_paid, u.prizes, u.balance, u.invited_by || '', u.friends_invited]; })));
+    else if (kind === 'contests') make([['Contest no.', 'Type', 'Entry', 'Duration', 'Private', 'Joined', 'Seats', 'Start', 'End', 'Status', 'Settled on', 'Entries collected', 'Prizes paid', 'Commission']].concat(O.contests.map(function (c) { return [c.id, kname(c), c.entry, E.DURATIONS[c.duration], c.private ? 'yes' : '', c.joined, c.size, c.start_date, c.end_date, c.status, c.settle_date || '', c.gross == null ? '' : c.gross, c.paid == null ? '' : c.paid, c.commission == null ? '' : c.commission]; })));
     else act(function () { return q(sb.from('dsl_txns').select('*,p:dsl_profiles(name,mobile)').order('id', { ascending: false }).limit(5000)); }, function (tx) {
       make([['Txn no.', 'Date', 'Player', 'Mobile', 'Type', 'Amount', 'Contest no.']].concat(tx.map(function (t) { return [t.id, t.ts, t.p ? t.p.name : '', t.p ? t.p.mobile : '', TX[t.type] || t.type, t.amt, t.cid || '']; })));
     });
@@ -537,8 +568,14 @@
     else if (a === 'loginBox') loginBox();
     else if (a === 'seg') { if (b.dataset.id === 'fk') fk = b.dataset.val; else fd = b.dataset.val; render(); }
     else if (a === 'play') { startDraft(fk, Number(b.dataset.entry), fd); render(); window.scrollTo(0, 0); }
+    else if (a === 'copy') copyText(b.dataset.text);
+    else if (a === 'customGo') {
+      var n = Number($('#cSize').value);
+      if (!(n >= E.MIN_SIZE && n <= E.MAX_SIZE) || n !== Math.floor(n)) return toast('Choose between ' + E.MIN_SIZE + ' and ' + E.MAX_SIZE + ' players.', true);
+      cSize = n; startDraft('custom', cEntry, fd, { private: true, size: n }); render(); window.scrollTo(0, 0); toast('Pick your stocks first. You get the link for your friends after you confirm.');
+    }
     else if (a === 'invite') { startDraft('h2h', Number(b.dataset.entry), fd, { private: true }); render(); window.scrollTo(0, 0); toast('Pick your stocks first. You get the link for your friend after you confirm.'); }
-    else if (a === 'prizes') prizeBox(fk, Number(b.dataset.entry));
+    else if (a === 'prizes') prizeBox(E.KINDS[fk].size, Number(b.dataset.entry), fd, 'Prizes when all ' + E.KINDS[fk].size + ' seats are taken. With fewer players the table adjusts to the number who joined.');
     else if (a === 'buy') buyBox(b.dataset.s);
     else if (a === 'drop') { delete draft.h[b.dataset.s]; render(); }
     else if (a === 'cancelDraft') { draft = null; render(); }
@@ -568,11 +605,19 @@
     var t = ev.target;
     if (t.id === 'stockSearch') { sq = t.value; $('#stockRail').innerHTML = railList(); }
     else if (t.id === 'mktSearch') { mq = t.value; $('#mktBody').innerHTML = marketRows(); }
+    else if (t.id === 'cSize') { var n = Number(t.value); if (n >= E.MIN_SIZE && n <= E.MAX_SIZE && n === Math.floor(n)) { cSize = n; $('#cPlan').innerHTML = planTable(E.prizePlan(cSize, cEntry, fd)); $('#cPlan').previousElementSibling.textContent = 'Prizes with all ' + cSize + ' players'; } }
   });
-  document.addEventListener('change', function (ev) { if (ev.target.id === 'secSel') { sec = ev.target.value; $('#stockRail').innerHTML = railList(); } });
+  document.addEventListener('change', function (ev) {
+    if (ev.target.id === 'secSel') { sec = ev.target.value; $('#stockRail').innerHTML = railList(); }
+    else if (ev.target.id === 'cEntry') { cEntry = Number(ev.target.value); render(); }
+  });
 
   // ---------- start ----------
-  (function () { var m = /[?&]j=([A-Za-z0-9]{6,12})\b/.exec(location.search); if (m) inviteCode = m[1].toUpperCase(); })();
+  (function () {
+    var m = /[?&]j=([A-Za-z0-9]{6,12})\b/.exec(location.search); if (m) inviteCode = m[1].toUpperCase();
+    var r = /[?&]ref=([A-Za-z0-9]{6,12})\b/.exec(location.search);
+    try { if (r) sessionStorage.setItem('dsl.ref', r[1].toUpperCase()); refCode = sessionStorage.getItem('dsl.ref'); } catch (e) { refCode = r ? r[1].toUpperCase() : null; }
+  })();
   sb.auth.onAuthStateChange(function (event, session) {
     if (event === 'PASSWORD_RECOVERY') setTimeout(newPasswordBox, 0);
     if (event === 'SIGNED_OUT' && D.user) { signedOut(); render(); }

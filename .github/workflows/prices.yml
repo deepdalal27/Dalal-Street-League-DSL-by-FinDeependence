@@ -38,6 +38,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       # GitHub Pages (Deploy from branch: main / root) republishes the site after this commit.
       - name: Save updated prices
+        if: always()
         run: |
           git add site/data/prices.json 2>/dev/null || true
           if ! git diff --cached --quiet; then
