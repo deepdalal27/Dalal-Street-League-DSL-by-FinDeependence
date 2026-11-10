@@ -4,7 +4,10 @@ Always brand as **FinDeependence**, with the round logo (`site/logo_circle.png`)
 
 ## Code map
 - `site/js/engine.js` — contest catalogue, prize and commission maths, tie rules, portfolio scoring, contest dates, price view (tested in `test/engine.test.js`).
-- `site/js/app.js` — the app: sign-up, wallet and owner-approved top-ups, lobby, portfolio builder, leaderboards, owner control room. State lives in localStorage (`dsl.v1`) until a server is added.
+- `site/js/app.js` — the app (Supabase client): sign-up, wallet, lobby, portfolio builder, leaderboards, owner control room.
+- `site/js/config.js` — Supabase URL and anon key (public). The service key is only a GitHub secret (`SUPABASE_SERVICE_KEY`); never commit it.
+- `supabase/setup.sql` — tables, row-level security and every money/contest function. Idempotent. Its contest catalogue block must match the engine (a test checks this).
 - `site/data/universe.js` — stocks players can pick (NSE symbols; `p` is a sample price only).
-- `scripts/sync-prices.js` + `scripts/prices-lib.js` — GitHub Actions sync writing `site/data/prices.json` (official NSE closes + delayed quotes).
-- No build step. `npm test` runs the engine tests; `npm start` serves `site/`.
+- `scripts/sync-prices.js` + `scripts/prices-lib.js` — NSE closes + delayed quotes to `site/data/prices.json` and the database. `scripts/settle.js` — settlement and refunds via `scripts/supabase-lib.js`.
+- No build step. `npm test` runs the unit tests; `npm start` serves `site/`.
+- Money is whole rupees in `dsl_txns`; a wallet balance is always the sum of its rows. Never add a way for the browser to write tables directly.

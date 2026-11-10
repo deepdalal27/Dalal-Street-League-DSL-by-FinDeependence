@@ -1,4 +1,4 @@
-name: Update stock prices
+name: Update prices and settle contests
 
 on:
   push:
@@ -28,6 +28,14 @@ jobs:
         run: npm test
       - name: Fetch NSE closing prices and delayed quotes
         run: npm run sync
+        env:
+          SUPABASE_URL: https://zlrsdtkmpladspxjjygu.supabase.co
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      - name: Settle finished contests and refund unfilled ones
+        run: npm run settle
+        env:
+          SUPABASE_URL: https://zlrsdtkmpladspxjjygu.supabase.co
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       # GitHub Pages (Deploy from branch: main / root) republishes the site after this commit.
       - name: Save updated prices
         run: |

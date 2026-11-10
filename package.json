@@ -5,6 +5,7 @@
   "scripts": {
     "start": "npx --yes http-server site -p 3000 -c-1",
     "sync": "node scripts/sync-prices.js",
+    "settle": "node scripts/settle.js",
     "test": "node --test test/*.test.js"
   },
   "license": "UNLICENSED",

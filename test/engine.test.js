@@ -115,3 +115,30 @@ test('NSE bhavcopy parser reads official closes for the wanted symbols', () => {
   assert.deepEqual(L.parseYahooChart({ chart: { result: [{ meta: { regularMarketPrice: 1290.549, regularMarketTime: 1794300000 } }] } }), { price: 1290.55, time: 1794300000000 });
   assert.equal(L.parseYahooChart({ chart: { result: null } }), null);
 });
+
+test('database contest catalogue (supabase/setup.sql) matches the engine', () => {
+  const sql = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'supabase', 'setup.sql'), 'utf8');
+  const block = sql.split('-- TYPES-BEGIN')[1].split('-- TYPES-END')[0].trim().split('\n').map((l) => l.trim().replace(/,$/, ''));
+  const want = all.map(([k, e]) => { const t = E.prizeTable(k, e); return `('${k}', ${e}, ${t.size}, ${E.COINS[e]}, '${JSON.stringify(t.prizes)}'::jsonb, ${t.commission})`; });
+  assert.deepEqual(block, want);
+});
+
+test('settlement job: settles full contests with engine results, cancels unfilled ones, skips contests without a closing day', async () => {
+  const { settleAll } = require('../scripts/settle.js');
+  const calls = [];
+  const entries = { 1: [{ id: 11, holdings: [{ s: 'A', q: 10, p: 100 }], cash: 49000 }, { id: 12, holdings: [{ s: 'B', q: 10, p: 100 }], cash: 49000 }] };
+  const db = {
+    select: async (p) => {
+      if (p.startsWith('dsl_prices?select=d&')) return [{ d: '2026-11-10' }, { d: '2026-11-12' }];
+      if (p.startsWith('dsl_contests')) return [{ id: 1, kind: 'h2h', entry: 49, size: 2, end_date: '2026-11-11', status: 'live' }, { id: 2, kind: 'l10', entry: 99, size: 10, end_date: '2026-11-12', status: 'open' }];
+      if (p.startsWith('dsl_prices?select=closes&d=eq.2026-11-12')) return [{ closes: { A: 90, B: 120 } }];
+      if (p.startsWith('dsl_entries') && p.includes('contest_id=eq.1')) return entries[1];
+      throw new Error('unexpected ' + p);
+    },
+    rpc: async (fn, args) => { calls.push([fn, args]); return fn === 'dsl_cancel_contest' ? 1 : { paid: 90, commission: 8 }; }
+  };
+  const out = await settleAll(db, () => {});
+  assert.deepEqual(out, { settled: 1, cancelled: 1, failed: 0 });
+  assert.deepEqual(calls[0], ['dsl_apply_settlement', { p_cid: 1, p_date: '2026-11-12', p_rows: [{ entry_id: 12, value: 50200, rank: 1, prize: 90 }, { entry_id: 11, value: 49900, rank: 2, prize: 0 }] }]);
+  assert.deepEqual(calls[1], ['dsl_cancel_contest', { p_cid: 2 }]);
+});

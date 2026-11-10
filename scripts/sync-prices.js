@@ -6,6 +6,7 @@ const path = require('path');
 const E = require('../site/js/engine.js');
 const U = require('../site/data/universe.js');
 const L = require('./prices-lib.js');
+const DB = require('./supabase-lib.js');
 
 const FILE = path.join(__dirname, '..', 'site', 'data', 'prices.json');
 const KEEP_DAYS = 75, LOOK_BACK = 10;
@@ -54,4 +55,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     fs.writeFileSync(FILE, JSON.stringify(data));
     console.log(`Saved. Latest close: ${last}. Days kept: ${dates.length}.`);
   } else console.log('No change.');
+
+  // 3. Copy to the Supabase database the app reads: days it does not have yet, plus the latest three (in case NSE corrected a file).
+  if (!DB.ready()) { console.log('SUPABASE_URL / SUPABASE_SERVICE_KEY not set; database not updated.'); return; }
+  const have = new Set((await DB.select('dsl_prices?select=d')).map((r) => r.d));
+  const send = dates.filter((d, i) => !have.has(d) || i >= dates.length - 3);
+  await DB.upsert('dsl_prices', send.map((d) => ({ d, closes: data.closes[d] })));
+  const q = data.quotes;
+  await DB.upsert('dsl_quotes', [{ id: 1, d: q ? q.date : null, t: q ? q.time : null, px: q ? q.px : null }]);
+  console.log(`Database: ${send.length} day(s) sent, quotes ${q ? 'as of ' + q.time : 'cleared'}.`);
 })().catch((e) => { console.error(e); process.exit(1); });

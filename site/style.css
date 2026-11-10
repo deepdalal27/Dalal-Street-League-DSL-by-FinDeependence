@@ -404,3 +404,5 @@ ol.steps { margin: 6px 0; padding-left: 20px; } ol.steps li { margin: 5px 0; }
 ul.plain { margin: 6px 0; padding-left: 20px; } ul.plain li { margin: 5px 0; }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; align-items: start; }
 .bar-cell { display: flex; align-items: center; gap: 8px; } .bar-cell i { display: block; height: 8px; border-radius: 4px; background: var(--accent); min-width: 2px; }
+body.busy { cursor: progress; } body.busy button { pointer-events: none; opacity: .75; }
+nav.tabs button[hidden] { display: none; }

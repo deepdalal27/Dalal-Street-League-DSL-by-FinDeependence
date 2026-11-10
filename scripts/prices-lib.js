@@ -38,7 +38,7 @@ async function fetchBhavcopy(date, wanted) {
   if (r.status === 404) return null;                       // holiday, weekend, or not published yet
   if (r.status !== 200) throw new Error('NSE ' + r.status);
   const out = parseBhavcopy(r.body, wanted);
-  if (out.date !== date) throw new Error(`file is for ${out.date}, asked ${date}`);
+  if (out.date !== date) return null;                     // NSE served another day's file: no trading on this date
   return out;
 }
 
