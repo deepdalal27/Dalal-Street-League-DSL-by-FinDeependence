@@ -1,0 +1,41 @@
+name: Update stock prices
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '*/15 3-10 * * 1-5'    # every 15 min, 09:15-16:00 IST: delayed quotes (GitHub may delay scheduled runs)
+    - cron: '20,50 12-14 * * 1-5'  # 18:00-20:20 IST: official NSE closing prices
+    - cron: '30 1 * * 2-6'         # 07:00 IST next morning: catch-up
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: price-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run tests
+        run: npm test
+      - name: Fetch NSE closing prices and delayed quotes
+        run: npm run sync
+      # GitHub Pages (Deploy from branch: main / root) republishes the site after this commit.
+      - name: Save updated prices
+        run: |
+          git add site/data/prices.json 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Update stock prices"
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+            git push || echo "push skipped"
+          fi

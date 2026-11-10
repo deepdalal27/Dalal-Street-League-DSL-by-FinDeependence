@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dalal Street League · FinDeependence</title>
+<meta name="description" content="Dalal Street League (DSL) by FinDeependence, created by CA Deep Dalal: a stock market fantasy league. Build a portfolio with virtual coins, play 1 vs 1 or in leagues, and the best performer on closing prices wins.">
+<link rel="icon" href="logo_circle.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="wrap">
+    <div class="brand"><img src="logo_circle.png" alt="FinDeependence logo"><div><div class="lbl">FinDeependence</div><h1>Dalal Street League</h1><span>Stock market fantasy league · Created by CA Deep Dalal</span></div></div>
+    <nav class="tabs" id="tabs" aria-label="Sections">
+      <button data-v="play" class="on">Play</button>
+      <button data-v="mine">My Contests</button>
+      <button data-v="wallet">Wallet</button>
+      <button data-v="market">Market</button>
+      <button data-v="rules">Rules &amp; Prizes</button>
+      <button data-v="owner">Owner</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div id="playerbar"></div>
+  <div id="notices"></div>
+  <section class="view" id="view"></section>
+  <p class="byline">FinDeependence · Dalal Street League · Created by CA Deep Dalal · Chartered Accountant · Fund Manager</p>
+  <p class="muted small" style="text-align:center;margin-top:-18px">A simulation game played with virtual coins. For education only. Not investment advice.</p>
+</main>
+
+<div id="modal" class="modal" hidden><div class="modal-card" role="dialog" aria-modal="true"><div id="modalBody"></div></div></div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="data/universe.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
