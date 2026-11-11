@@ -47,6 +47,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     } catch (e) { failed++; console.log(`${d}: failed, ${e.message}`); }
     await sleep(400);
   }
+  // 1b. Stocks added to the list: fetch the latest two days again so they have a price and a day's change straight away.
+  for (const d of Object.keys(data.closes).sort().slice(-2)) {
+    const missing = symbols.filter((x) => !(data.closes[d][x] > 0)).length;
+    if (missing < 20) continue;
+    try { const r = await L.fetchBhavcopy(d, symbols); if (r) { data.closes[d] = Object.assign({}, data.closes[d], r.closes); console.log(`${d}: refreshed, ${Object.keys(data.closes[d]).length} closing prices`); } }
+    catch (e) { console.log(`${d}: refresh failed, ${e.message}`); }
+    await sleep(400);
+  }
   for (const d of Object.keys(data.closes)) if (d < E.addDays(today, -KEEP_DAYS)) delete data.closes[d];
   const dates = Object.keys(data.closes).sort(), last = dates[dates.length - 1];
 
