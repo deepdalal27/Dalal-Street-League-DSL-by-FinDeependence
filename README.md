@@ -11,7 +11,10 @@ Players sign up, add money to a wallet, and play each other. Accounts, wallets a
 - **Wallet**: the player enters an amount, pays it to the owner's UPI ID, and sends the UPI reference number. The owner approves the request in the Owner tab and the wallet is credited. Withdrawals work the same way in reverse.
 - **Contests between real players**: 1 vs 1, League of 10, Mega League 50 and private tournaments for 2 to 100 friends, each daily, weekly or monthly.
 - **Invite links**: one for the app (the owner sees who invited whom) and one for every contest.
-- **Portfolio builder**: buy at least 3 stocks with the coins. The server takes the price at the moment of joining.
+- **Stocks**: the Nifty 500, tagged Large cap (Nifty 100), Mid cap (Nifty Midcap 150) and Small cap (Nifty Smallcap 250). The list refreshes daily from NSE into `site/data/universe.json`.
+- **Portfolio builder**: buy at least 3 stocks with the coins, filter by cap, see the large/mid/small mix, split coins equally or reuse the last portfolio. The server takes the price at the moment of joining.
+- **Player experience**: home summary with level, entries-close countdown, running contests and one-tap replays; result screen for each finished contest; levels and badges; weekly, monthly and all-time leaderboard (points by finishing position, not by money spent).
+- **Responsible play**: each player can set a daily entry limit (lowering is immediate, raising waits 24 hours, enforced by the database) and sees their honest net result in the wallet.
 - **Settlement**: every evening the GitHub Actions job values all portfolios on the official NSE closing prices, pays prizes into wallets, and refunds contests nobody else joined.
 - **Owner tab** (owner account only): players, active players, contests, commission earned, money requests, CSV downloads.
 

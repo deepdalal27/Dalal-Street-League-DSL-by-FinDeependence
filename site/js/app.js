@@ -3,8 +3,17 @@
    Data lives in Supabase (see supabase/setup.sql). Players can only read their own rows; every change goes through a database function. */
 (function () {
   'use strict';
-  var E = window.DSL.E, U = window.DSL_UNIVERSE, CFG = window.DSL_CONFIG;
-  var BY = {}; U.forEach(function (u) { BY[u.s] = u; });
+  var E = window.DSL.E, U = [], CFG = window.DSL_CONFIG, BY = {};
+  // Stock list: the Nifty 500 from site/data/universe.json (written by the daily sync), else the built-in list.
+  var CAPS = { L: 'Large', M: 'Mid', S: 'Small' };
+  function setUniverse(list) { U = list.filter(function (u) { return u && u.s; }); BY = {}; U.forEach(function (u) { if (!CAPS[u.c]) u.c = 'L'; BY[u.s] = u; }); }
+  setUniverse(window.DSL_UNIVERSE);
+  function loadUniverse() {
+    return fetch('data/universe.json', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { if (j && j.stocks && j.stocks.length >= 100) setUniverse(j.stocks); }, function () {});
+  }
+  var nameOf = function (s) { return BY[s] ? BY[s].n : s; };
+  var capPill = function (c) { return '<span class="cap cap-' + c + '">' + CAPS[c] + '</span>'; };
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
   var num = function (n, d) { return Number(n).toLocaleString('en-IN', { minimumFractionDigits: d || 0, maximumFractionDigits: d || 0 }); };
@@ -29,7 +38,7 @@
   }
 
   // ---------- state ----------
-  var view = 'play', draft = null, fk = 'h2h', fd = 'day', cSize = 5, cEntry = 99, sq = '', sec = '', mq = '', ownerTab = 'report', busy = false, booted = false;
+  var view = 'play', draft = null, capF = '', mcap = '', msort = 'az', lbDays = 7, LB = {}, fk = 'h2h', fd = 'day', cSize = 5, cEntry = 99, sq = '', sec = '', mq = '', ownerTab = 'report', busy = false, booted = false;
   var P = null;                                     // price view (null until prices load)
   var D = { user: null, profile: null, balance: 0, settings: { upi: '', payee: 'CA Deep Dalal' }, txns: [], requests: [], entries: [], open: [] };
   var O = { report: null, requests: [], players: [], contests: [] };   // owner data
@@ -124,7 +133,7 @@
     var u = me();
     document.querySelectorAll('#tabs button').forEach(function (b) { b.classList.toggle('on', b.dataset.v === view); if (b.dataset.v === 'owner') b.hidden = !isOwner(); });
     $('#playerbar').innerHTML = u
-      ? '<div class="who">Hi, ' + esc(u.name) + ' <span class="muted small">' + esc(u.mobile) + '</span></div><div class="row"><span class="bal" title="Wallet balance">Wallet ' + inr(D.balance) + '</span><button data-act="go" data-v="wallet">Add money</button><button data-act="logout">Log out</button></div>'
+      ? '<div class="who">Hi, ' + esc(u.name.split(' ')[0]) + ' <span class="lvl" title="Your level">' + esc(level(myStats().xp).name) + '</span></div><div class="row"><span class="bal" title="Wallet balance">Wallet ' + inr(D.balance) + '</span><button data-act="go" data-v="wallet">Add money</button><button data-act="logout">Log out</button></div>'
       : '';
     var note = '';
     if (booted && !P) note = '<div class="notice"><b>Prices are not loaded yet.</b> Stock prices arrive from NSE after the first price update. Contests open as soon as they are in. <button data-act="refresh">Check again</button></div>';
@@ -133,8 +142,9 @@
     $('#notices').innerHTML = note;
     var v = $('#view');
     if (!booted) v.innerHTML = '<div class="panel empty"><span>Loading Dalal Street League…</span></div>';
-    else if (view === 'play') v.innerHTML = !u ? authHtml() : draft ? builderHtml() : lobbyHtml();
+    else if (view === 'play') v.innerHTML = !u ? authHtml() : draft ? builderHtml() : heroHtml() + lobbyHtml();
     else if (view === 'mine') v.innerHTML = !u ? authHtml() : mineHtml();
+    else if (view === 'leaders') v.innerHTML = !u ? authHtml() : leadersHtml();
     else if (view === 'wallet') v.innerHTML = !u ? authHtml() : walletHtml();
     else if (view === 'market') v.innerHTML = marketHtml();
     else if (view === 'rules') v.innerHTML = rulesHtml();
@@ -201,6 +211,7 @@
   }
   var inviteCode = null, refCode = null;
   function afterLogin() {
+    setTimeout(showResults, 0);
     if (inviteCode && me()) { var code = inviteCode; inviteCode = null; openChallenge(code); }
     render();
   }
@@ -278,28 +289,62 @@
   var draftHoldings = function () { return Object.keys(draft.h).filter(function (s) { return P.px[s] > 0; }).map(function (s) { return { s: s, q: draft.h[s], p: P.px[s] }; }); };
   function stockBtn(u, inTeam) {
     var c = chg(u.s);
-    return '<button class="stock-btn' + (inTeam ? ' in' : '') + '" data-act="buy" data-s="' + esc(u.s) + '"><span class="nm">' + esc(u.s) + '</span><span class="px">' + px2(P.px[u.s]) + '</span><span class="sub">' + esc(u.n) + '</span><span class="chg ' + (c > 0 ? 'up' : c < 0 ? 'down' : '') + '">' + (c > 0 ? '+' : '') + num(c, 2) + '%</span></button>';
+    return '<button class="stock-btn' + (inTeam ? ' in' : '') + '" data-act="buy" data-s="' + esc(u.s) + '"><span class="nm">' + esc(u.s) + ' ' + capPill(u.c) + '</span><span class="px">' + px2(P.px[u.s]) + '</span><span class="sub">' + esc(u.n) + '</span><span class="chg ' + (c > 0 ? 'up' : c < 0 ? 'down' : '') + '">' + (c > 0 ? '+' : '') + num(c, 2) + '%</span></button>';
   }
   function railList() {
     var s = sq.trim().toLowerCase();
-    var list = stocks().filter(function (u) { return (!sec || u.sec === sec) && (!s || u.s.toLowerCase().indexOf(s) >= 0 || u.n.toLowerCase().indexOf(s) >= 0); });
-    return list.length ? list.map(function (u) { return stockBtn(u, !!draft.h[u.s]); }).join('') : '<p class="muted small">No stock matches.</p>';
+    var list = stocks().filter(function (u) { return (!capF || u.c === capF) && (!sec || u.sec === sec) && (!s || u.s.toLowerCase().indexOf(s) >= 0 || u.n.toLowerCase().indexOf(s) >= 0); });
+    var shown = list.slice(0, 150);
+    return list.length ? shown.map(function (u) { return stockBtn(u, !!draft.h[u.s]); }).join('') + (list.length > shown.length ? '<p class="muted small">Showing 150 of ' + list.length + '. Search or filter to find more.</p>' : '') : '<p class="muted small">No stock matches.</p>';
   }
   function builderHtml() {
     var hs = draftHoldings(), cost = E.cost(hs), left = E.r2(draft.coins - cost), t = E.prizePlan(draft.size, draft.entry, draft.duration);
     var secs = Array.from(new Set(U.map(function (u) { return u.sec; }))).sort();
     var rows = hs.map(function (h) {
-      return '<tr><td><b>' + esc(h.s) + '</b><br><span class="muted small">' + esc(BY[h.s].n) + '</span></td><td class="num">' + num(h.q) + '</td><td class="num">' + px2(h.p) + '</td><td class="num">' + num(h.q * h.p, 2) + '</td><td class="num">' + num(h.q * h.p / draft.coins * 100, 1) + '%</td><td><button data-act="buy" data-s="' + esc(h.s) + '">Change</button> <button class="danger" data-act="drop" data-s="' + esc(h.s) + '">Remove</button></td></tr>';
+      return '<tr><td><b>' + esc(h.s) + '</b> ' + (BY[h.s] ? capPill(BY[h.s].c) : '') + '<br><span class="muted small">' + esc(nameOf(h.s)) + '</span></td><td class="num">' + num(h.q) + '</td><td class="num">' + px2(h.p) + '</td><td class="num">' + num(h.q * h.p, 2) + '</td><td class="num">' + num(h.q * h.p / draft.coins * 100, 1) + '%</td><td><button data-act="buy" data-s="' + esc(h.s) + '">Change</button> <button class="danger" data-act="drop" data-s="' + esc(h.s) + '">Remove</button></td></tr>';
     }).join('');
     var err = E.validate(hs, draft.coins), tag = draft.code ? ' · invited by ' + esc(draft.by || 'a friend') : draft.private ? ' · private' : '';
+    var capChips = '<div class="chips capchips">' + [['', 'All']].concat(Object.keys(CAPS).map(function (c) { return [c, CAPS[c] + ' cap']; })).map(function (x) { return '<button data-act="capF" data-c="' + x[0] + '" class="' + (capF === x[0] ? 'on' : '') + '">' + x[1] + '</button>'; }).join('') + '</div>';
+    var last = lastPortfolio();
+    var tools = '<div class="row" style="margin:-4px 0 12px">' + (hs.length >= 2 ? '<button data-act="split">Split coins equally</button>' : '') + (last ? '<button data-act="reuse">Reuse my last portfolio</button>' : '') + (hs.length ? '<button class="danger" data-act="clearAll">Clear all</button>' : '') + '</div>';
     return '<div class="apply"><aside class="rail"><div class="rail-head"><h2>Stocks</h2><select id="secSel" aria-label="Sector"><option value="">All sectors</option>' + secs.map(function (x) { return '<option' + (x === sec ? ' selected' : '') + '>' + esc(x) + '</option>'; }).join('') + '</select></div>' +
-      '<input type="search" id="stockSearch" placeholder="Search stock" aria-label="Search stock" value="' + esc(sq) + '"><div class="ipo-list" id="stockRail">' + railList() + '</div></aside>' +
+      capChips + '<input type="search" id="stockSearch" placeholder="Search ' + stocks().length + ' stocks" aria-label="Search stock" value="' + esc(sq) + '"><div class="ipo-list" id="stockRail">' + railList() + '</div></aside>' +
       '<div class="panel"><div class="panel-head"><div><div class="lbl2">Build your portfolio' + tag + '</div><h2>' + esc(kname(draft)) + ' · ' + inr(draft.entry) + ' · ' + esc(E.DURATIONS[draft.duration]) + '</h2></div><button data-act="cancelDraft">Back to contests</button></div>' +
       '<div class="facts">' + fact('Coins given', num(draft.coins)) + fact('Invested', num(cost, 2)) + fact('Coins left', '<span class="' + (left < 0 ? 'down' : '') + '">' + num(left, 2) + '</span>', 'Unused coins stay as cash') + fact(draft.size === 2 ? 'You win' : '1st prize if full', inr(t.prizes[0])) + fact('Ends at close of', fmtDate(draft.end)) + '</div>' +
-      '<div class="meter' + (left < 0 ? ' over' : '') + '"><i style="width:' + Math.min(100, cost / draft.coins * 100) + '%"></i></div>' +
+      '<div class="meter' + (left < 0 ? ' over' : '') + '"><i style="width:' + Math.min(100, cost / draft.coins * 100) + '%"></i></div>' + capMix(hs, draft.coins) + tools +
       (hs.length ? '<div class="tbl"><table><thead><tr><th>Stock</th><th class="num">Shares</th><th class="num">Buy price</th><th class="num">Coins</th><th class="num">Weight</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>'
         : '<div class="empty"><b>No stocks yet</b><span>Tap a stock on the list to buy it with your coins. Pick at least ' + E.MIN_STOCKS + '.</span></div>') +
       '<div class="backup"><p class="muted">' + (err ? esc(err) : 'Ready. Entry of ' + inr(draft.entry) + ' is taken from your wallet when you confirm. You buy at the price at that moment, and picks cannot be changed afterwards.') + '</p><button class="primary" data-act="confirmJoin"' + (err ? ' disabled' : '') + '>Confirm and pay ' + inr(draft.entry) + '</button></div></div></div>';
+  }
+  // Coins split by market-cap group, as a stacked bar.
+  function capMix(hs, coins) {
+    if (!hs.length) return '';
+    var by = { L: 0, M: 0, S: 0 }; hs.forEach(function (h) { by[BY[h.s] ? BY[h.s].c : 'L'] += h.q * h.p; });
+    var seg = function (c) { var w = by[c] / coins * 100; return w > 0 ? '<i class="cap-' + c + '" style="width:' + w + '%"></i>' : ''; };
+    return '<div class="mix"><div class="mixbar">' + seg('L') + seg('M') + seg('S') + '</div><div class="mixkey">' + Object.keys(CAPS).map(function (c) { return '<span><b class="dot cap-' + c + '"></b>' + CAPS[c] + ' ' + num(by[c] / coins * 100, 0) + '%</span>'; }).join('') + '</div></div>';
+  }
+  // The portfolio of the player's latest contest, as share of coins per stock.
+  function lastPortfolio(e) {
+    e = e || D.entries[0]; if (!e || !e.holdings || !e.holdings.length) return null;
+    return { weights: e.holdings.map(function (h) { return { s: h.s, w: h.q * h.p / e.c.coins }; }) };
+  }
+  function applyWeights(lp) {
+    draft.h = {};
+    lp.weights.forEach(function (x) { var p = P.px[x.s]; if (p > 0) { var q = Math.floor(x.w * draft.coins / p); if (q > 0) draft.h[x.s] = q; } });
+  }
+  function splitEqually() {
+    var syms = Object.keys(draft.h).filter(function (s) { return P.px[s] > 0; }); if (!syms.length) return;
+    var each = draft.coins / syms.length; draft.h = {};
+    syms.forEach(function (s) { var q = Math.floor(each / P.px[s]); if (q > 0) draft.h[s] = q; });
+    // Spend what rounding left over: one share at a time to the stock that has the least so far.
+    var spent = function () { return E.cost(draftHoldings()); };
+    for (var k = 0; k < 500; k++) {
+      var left = draft.coins - spent(), pick = null;
+      Object.keys(draft.h).forEach(function (s) { if (P.px[s] <= left && (!pick || draft.h[s] * P.px[s] < draft.h[pick] * P.px[pick])) pick = s; });
+      if (!pick) break;
+      draft.h[pick]++;
+    }
+    if (Object.keys(draft.h).length < syms.length) toast('Some stocks cost more than an equal share of your coins and were left out.', true);
   }
   function buyBox(sym) {
     var u = BY[sym], p = P.px[sym]; if (!u || !(p > 0)) return;
@@ -327,6 +372,8 @@
   function confirmJoin() {
     var hs = draftHoldings(), err = E.validate(hs, draft.coins);
     if (err) return toast(err, true);
+    var lim = limitInfo();
+    if (lim.limit != null && lim.spent + draft.entry > lim.limit) return toast('This entry would take you over your daily limit of ' + inr(lim.limit) + '. You can change it in your wallet.', true);
     if (D.balance < draft.entry) {
       return modal('<h2>Add money to play</h2><p>This contest needs ' + inr(draft.entry) + ' and your wallet has ' + inr(D.balance) + '. Your stock picks are kept while you add money.</p><div class="row" style="justify-content:flex-end"><button data-close>Not now</button><button class="primary" id="goWallet">Go to wallet</button></div>', function (b, close) { $('#goWallet', b).onclick = function () { close(); view = 'wallet'; render(); }; });
     }
@@ -354,15 +401,15 @@
   }
   function mineHtml() {
     var list = D.entries;
-    if (!list.length) return '<div class="panel empty"><b>No contests yet</b><span>Join your first contest to see it here.</span><button class="primary" data-act="go" data-v="play">See contests</button></div>';
+    if (!list.length) return statsHtml() + '<div class="panel empty" style="margin-top:16px"><b>No contests yet</b><span>Join your first contest to see it here.</span><button class="primary" data-act="go" data-v="play">See contests</button></div>';
     var card = function (e) {
-      var c = e.c, v = myValue(e), done = c.status === 'settled';
+      var c = e.c, v = myValue(e), done = c.status === 'settled', mv = moveOf(e, v);
       return '<div class="ccard"><div class="top"><div><div class="lbl2">' + esc(kname(c)) + ' · ' + esc(E.DURATIONS[c.duration]) + (c.private && c.kind !== 'custom' ? ' · private' : '') + '</div><div class="entry">' + inr(c.entry) + '</div></div><div>' + statusPill(c, e) + '</div></div>' +
-        '<div class="meta">' + fact(done ? 'Final rank' : 'Players', done ? e.rank + ' of ' + c.joined : c.joined + (c.status === 'open' ? ' of ' + c.size : '')) + fact('Return', pct(E.returnPct(v, c.coins))) + fact('Portfolio', num(v, 2)) + fact(done ? 'Settled on' : 'Ends at close of', fmtDate(done ? c.settle_date : c.end_date)) + '</div>' +
-        '<div class="row"><button data-act="detail" data-id="' + c.id + '">' + (c.status === 'open' ? 'View my portfolio' : 'View leaderboard') + '</button>' + (isOpen(c) && c.code ? '<button class="primary" data-act="share" data-id="' + c.id + '">Invite friends</button>' : '') + '</div></div>';
+        '<div class="meta">' + fact(done ? 'Final rank' : 'Players', done ? e.rank + ' of ' + c.joined : c.joined + (c.status === 'open' ? ' of ' + c.size : '')) + fact('Return', pct(E.returnPct(v, c.coins)) + mv) + fact('Portfolio', num(v, 2)) + fact(done ? 'Settled on' : 'Ends at close of', fmtDate(done ? c.settle_date : c.end_date)) + '</div>' +
+        '<div class="row"><button data-act="detail" data-id="' + c.id + '">' + (c.status === 'open' ? 'View my portfolio' : 'View leaderboard') + '</button>' + (isOpen(c) && c.code ? '<button class="primary" data-act="share" data-id="' + c.id + '">Invite friends</button>' : '') + (done || c.status === 'cancelled' ? '<button data-act="again" data-id="' + c.id + '">Play again</button>' : '') + '</div></div>';
     };
     var run = list.filter(function (e) { return e.c.status === 'open' || e.c.status === 'live'; }), done = list.filter(function (e) { return e.c.status === 'settled' || e.c.status === 'cancelled'; });
-    return '<div class="lbl2">My contests</div><h2 class="big">' + run.length + ' running · ' + done.length + ' finished</h2>' +
+    return statsHtml() + '<div class="lbl2" style="margin-top:22px">My contests</div><h2 class="big">' + run.length + ' running · ' + done.length + ' finished</h2>' +
       (run.length ? '<h3 class="sec">Running</h3><div class="cards">' + run.map(card).join('') + '</div>' : '') + (done.length ? '<h3 class="sec">Finished</h3><div class="cards">' + done.map(card).join('') + '</div>' : '');
   }
   function detailBox(cid) {
@@ -406,7 +453,7 @@
     var cOf = function (cid) { var e = D.entries.find(function (x) { return x.contest_id === cid; }); return e ? e.c : null; };
     return '<div class="lbl2">Wallet</div><h2 class="big">' + inr(D.balance) + ' available</h2>' +
       '<div class="tiles">' + fact('Money added', inr(sum('topup'))) + fact('Entries paid', inr(-(sum('entry') + sum('entry_refund')))) + fact('Prizes won', inr(sum('prize'))) + fact('Withdrawn or on hold', inr(-(sum('withdraw') + sum('refund')))) + '</div>' +
-      '<div class="row" style="margin-bottom:14px"><button class="primary" data-act="addMoney">Add money</button><button data-act="withdraw">Withdraw</button></div>' +
+      '<div class="row" style="margin-bottom:14px"><button class="primary" data-act="addMoney">Add money</button><button data-act="withdraw">Withdraw</button></div>' + recordHtml(sum) + limitHtml() +
       '<h3 class="sec">Requests</h3>' + (D.requests.length ? '<div class="tbl"><table><thead><tr><th>Date</th><th>Type</th><th class="num">Amount</th><th>Reference</th><th>Status</th></tr></thead><tbody>' + D.requests.map(function (r) {
         return '<tr><td>' + esc(fmtTs(r.ts)) + '</td><td>' + (r.kind === 'topup' ? 'Add money' : 'Withdraw') + '</td><td class="num">' + inr(r.amt) + '</td><td>' + esc(r.ref) + '</td><td>' + pill(r.status, r.status === 'pending' ? 'Waiting for approval' : r.status === 'approved' ? (r.kind === 'topup' ? 'Added' : 'Paid') : 'Rejected') + '</td></tr>';
       }).join('') + '</tbody></table></div>' : '<p class="muted">No requests yet.</p>') +
@@ -451,15 +498,169 @@
   }
 
   // ---------- market ----------
+  function marketList() {
+    var s2 = mq.trim().toLowerCase();
+    var list = stocks().filter(function (u) { return (!mcap || u.c === mcap) && (!s2 || u.s.toLowerCase().indexOf(s2) >= 0 || u.n.toLowerCase().indexOf(s2) >= 0 || u.sec.toLowerCase().indexOf(s2) >= 0); });
+    if (msort === 'up') list.sort(function (a, b) { return chg(b.s) - chg(a.s); });
+    else if (msort === 'down') list.sort(function (a, b) { return chg(a.s) - chg(b.s); });
+    return list;
+  }
   function marketRows() {
-    var s = mq.trim().toLowerCase();
-    var list = stocks().filter(function (u) { return !s || u.s.toLowerCase().indexOf(s) >= 0 || u.n.toLowerCase().indexOf(s) >= 0 || u.sec.toLowerCase().indexOf(s) >= 0; });
-    return list.map(function (u) { return '<tr><td><b>' + esc(u.s) + '</b></td><td>' + esc(u.n) + '</td><td>' + esc(u.sec) + '</td><td class="num">' + px2(P.px[u.s]) + '</td><td class="num">' + pct(chg(u.s)) + '</td></tr>'; }).join('') || '<tr><td colspan="5" class="muted">No stock matches.</td></tr>';
+    var list = marketList(), shown = list.slice(0, 200);
+    return shown.map(function (u) { return '<tr><td><b>' + esc(u.s) + '</b></td><td>' + esc(u.n) + '</td><td>' + capPill(u.c) + '</td><td>' + esc(u.sec) + '</td><td class="num">' + px2(P.px[u.s]) + '</td><td class="num">' + pct(chg(u.s)) + '</td></tr>'; }).join('') +
+      (list.length > shown.length ? '<tr><td colspan="6" class="muted">Showing 200 of ' + list.length + '. Search or filter to narrow the list.</td></tr>' : '') || '<tr><td colspan="6" class="muted">No stock matches.</td></tr>';
   }
   function marketHtml() {
     if (!P) return '<div class="panel empty"><b>Prices are not loaded yet</b><span>The stock list appears after the first price update.</span></div>';
-    return '<div class="lbl2">Market</div><h2 class="big">' + stocks().length + ' stocks you can pick</h2><div class="filters"><input type="search" id="mktSearch" class="grow" placeholder="Search by name, symbol or sector" aria-label="Search stocks" value="' + esc(mq) + '"></div>' +
-      '<div class="tbl"><table><thead><tr><th>Symbol</th><th>Company</th><th>Sector</th><th class="num">Price</th><th class="num">Change</th></tr></thead><tbody id="mktBody">' + marketRows() + '</tbody></table></div>';
+    var all = stocks(), cnt = function (c) { return all.filter(function (u) { return u.c === c; }).length; };
+    var up = all.filter(function (u) { return chg(u.s) > 0; }).length, down = all.filter(function (u) { return chg(u.s) < 0; }).length;
+    return '<div class="lbl2">Market</div><h2 class="big">' + all.length + ' stocks you can pick</h2>' +
+      '<div class="tiles">' + Object.keys(CAPS).map(function (c) { return fact(CAPS[c] + ' cap', num(cnt(c)) + ' stocks', c === 'L' ? 'Top 100 companies by market value' : c === 'M' ? 'Companies 101 to 250' : 'Companies 251 to 500'); }).join('') + fact('Last session', '<span class="up">' + up + ' up</span> · <span class="down">' + down + ' down</span>') + '</div>' +
+      '<div class="filters"><div class="chips capchips">' + [['', 'All']].concat(Object.keys(CAPS).map(function (c) { return [c, CAPS[c] + ' cap']; })).map(function (x) { return '<button data-act="mcap" data-c="' + x[0] + '" class="' + (mcap === x[0] ? 'on' : '') + '">' + x[1] + '</button>'; }).join('') + '</div>' +
+      '<select id="mSort" aria-label="Sort"><option value="az"' + (msort === 'az' ? ' selected' : '') + '>A to Z</option><option value="up"' + (msort === 'up' ? ' selected' : '') + '>Biggest gainers</option><option value="down"' + (msort === 'down' ? ' selected' : '') + '>Biggest fallers</option></select>' +
+      '<input type="search" id="mktSearch" class="grow" placeholder="Search by name, symbol or sector" aria-label="Search stocks" value="' + esc(mq) + '"></div>' +
+      '<div class="tbl"><table><thead><tr><th>Symbol</th><th>Company</th><th>Cap</th><th>Sector</th><th class="num">Price</th><th class="num">Change</th></tr></thead><tbody id="mktBody">' + marketRows() + '</tbody></table></div>' +
+      '<p class="muted small" style="margin-top:8px">Large, mid and small cap follow the NSE indices: Nifty 100, Nifty Midcap 150 and Nifty Smallcap 250.</p>';
+  }
+
+  // ---------- engagement: levels, badges, home summary, results, leaderboard ----------
+  var LEVELS = [[0, 'Rookie Trader'], [50, 'Swing Trader'], [150, 'Market Analyst'], [350, 'Portfolio Pro'], [700, 'Bull Runner'], [1200, 'Dalal Street Legend']];
+  function level(xp) {
+    var i = 0; while (i + 1 < LEVELS.length && xp >= LEVELS[i + 1][0]) i++;
+    var next = LEVELS[i + 1];
+    return { n: i + 1, name: LEVELS[i][1], from: LEVELS[i][0], to: next ? next[0] : null, nextName: next ? next[1] : null, pct: next ? Math.round((xp - LEVELS[i][0]) / (next[0] - LEVELS[i][0]) * 100) : 100 };
+  }
+  function myStats() {
+    var fin = D.entries.filter(function (e) { return e.c.status === 'settled'; }), st = { played: fin.length, wins: 0, firsts: 0, podium: 0, prizes: 0, best: null, bestRank: null, durs: {}, diverse: false, friends: 0 };
+    fin.forEach(function (e) {
+      if (e.prize > 0) { st.wins++; st.prizes += e.prize; }
+      if (e.rank === 1) st.firsts++;
+      if (e.rank <= 3 && e.c.joined >= 5) st.podium++;
+      var r = E.returnPct(Number(e.value), e.c.coins); if (st.best == null || r > st.best) st.best = r;
+      st.durs[e.c.duration] = 1;
+    });
+    D.entries.forEach(function (e) {
+      var caps = {}; (e.holdings || []).forEach(function (h) { if (BY[h.s]) caps[BY[h.s].c] = 1; });
+      if (caps.L && caps.M && caps.S) st.diverse = true;
+      if (e.c.private && e.c.joined >= 2) st.friends++;
+    });
+    st.xp = 10 * st.played + 20 * st.wins + 40 * st.firsts + 30 * st.podium;
+    return st;
+  }
+  var BADGES = [
+    ['first', 'First trade', 'Finish your first contest', function (st) { return st.played >= 1; }],
+    ['win', 'In the money', 'Win a prize', function (st) { return st.wins >= 1; }],
+    ['champ', 'Champion', 'Finish first in a contest', function (st) { return st.firsts >= 1; }],
+    ['podium', 'Podium', 'Top 3 in a contest of 5 or more', function (st) { return st.podium >= 1; }],
+    ['diverse', 'Diversifier', 'Hold large, mid and small caps together', function (st) { return st.diverse; }],
+    ['friends', 'Squad', 'Play a private contest with friends', function (st) { return st.friends >= 1; }],
+    ['all', 'All seasons', 'Finish a daily, a weekly and a monthly contest', function (st) { return st.durs.day && st.durs.week && st.durs.month; }],
+    ['ten', 'Regular', 'Finish 10 contests', function (st) { return st.played >= 10; }],
+    ['five', 'Five-time winner', 'Win 5 prizes', function (st) { return st.wins >= 5; }]
+  ];
+  function statsHtml() {
+    var st = myStats(), lv = level(st.xp), got = BADGES.filter(function (b) { return b[3](st); }).length;
+    return '<div class="panel stats"><div class="lvlhead"><div><div class="lbl2">Level ' + lv.n + '</div><h2 class="big" style="margin:2px 0 6px">' + esc(lv.name) + '</h2>' +
+      '<div class="xp"><i style="width:' + lv.pct + '%"></i></div><p class="muted small" style="margin:6px 0 0">' + (lv.to ? num(st.xp) + ' / ' + num(lv.to) + ' points to ' + esc(lv.nextName) : num(st.xp) + ' points · top level') + '</p></div>' +
+      '<div class="tiles" style="margin:0;flex:1">' + fact('Contests', num(st.played)) + fact('Prizes won', num(st.wins), st.played ? num(st.wins / st.played * 100, 0) + '% of contests' : '') + fact('First places', num(st.firsts)) + fact('Best return', st.best == null ? '–' : pct(st.best)) + '</div></div>' +
+      '<h3 class="sec">Badges · ' + got + ' of ' + BADGES.length + '</h3><div class="badges">' + BADGES.map(function (b) { var on = b[3](st); return '<div class="badge' + (on ? ' on' : '') + '" title="' + esc(b[2]) + '"><span class="ico ico-' + b[0] + '"></span><b>' + esc(b[1]) + '</b><small>' + esc(b[2]) + '</small></div>'; }).join('') + '</div>' +
+      '<p class="muted small" style="margin:10px 0 0">Points: 10 per finished contest, 20 per prize, 30 per podium, 40 per first place.</p></div>';
+  }
+  // Change in a running contest's portfolio value since the player last looked (kept for this browser tab).
+  var lastSeen = {};
+  try { lastSeen = JSON.parse(sessionStorage.getItem('dsl.last') || '{}'); } catch (e) { lastSeen = {}; }
+  function moveOf(e, v) {
+    if (e.c.status !== 'live' && e.c.status !== 'open') return '';
+    var k = String(e.contest_id), was = lastSeen[k]; lastSeen[k] = v;
+    try { sessionStorage.setItem('dsl.last', JSON.stringify(lastSeen)); } catch (x) { /* ignore */ }
+    if (was == null || Math.abs(v - was) < 0.01) return '';
+    return ' <span class="mv ' + (v > was ? 'up' : 'down') + '">' + (v > was ? '▲' : '▼') + '</span>';
+  }
+  function countdown(ms) {
+    if (ms <= 0) return 'now';
+    var m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+    var p2 = function (n) { return (n < 10 ? '0' : '') + n; }, sec = Math.floor(ms / 1000) % 60;
+    return d ? d + 'd ' + (h % 24) + 'h ' + p2(m % 60) + 'm' : h ? h + 'h ' + p2(m % 60) + 'm ' + p2(sec) + 's' : m + 'm ' + p2(sec) + 's';
+  }
+  var QUICK = [['h2h', 49, 'day'], ['l10', 99, 'day'], ['m50', 49, 'week']];
+  function heroHtml() {
+    var u = me(), st = myStats(), lv = level(st.xp), lock = E.lockAt(E.istToday());
+    var run = D.entries.filter(function (e) { return e.c.status === 'live' || e.c.status === 'open'; });
+    var combos = [], seen = {};
+    D.entries.forEach(function (e) { var c = e.c, k = c.kind + c.entry + c.duration; if (!c.private && !seen[k] && combos.length < 3) { seen[k] = 1; combos.push([c.kind, c.entry, c.duration]); } });
+    QUICK.forEach(function (x) { var k = x.join(''); if (!seen[k] && combos.length < 3) { seen[k] = 1; combos.push(x); } });
+    var quick = combos.map(function (x) {
+      var t = E.prizePlan(E.KINDS[x[0]].size, x[1], x[2]);
+      return '<button class="qp" data-act="quick" data-k="' + x[0] + '" data-e="' + x[1] + '" data-d="' + x[2] + '"' + (P ? '' : ' disabled') + '><b>' + esc(E.KINDS[x[0]].label) + ' · ' + inr(x[1]) + '</b><span>' + esc(E.DURATIONS[x[2]]) + ' · 1st ' + inr(t.prizes[0]) + '</span></button>';
+    }).join('');
+    var live = run.slice(0, 4).map(function (e) {
+      var v = myValue(e);
+      return '<button class="lv" data-act="detail" data-id="' + e.c.id + '"><span>' + esc(kname(e.c)) + ' · ' + inr(e.c.entry) + '</span><b>' + pct(E.returnPct(v, e.c.coins)) + '</b>' + statusPill(e.c, e) + '</button>';
+    }).join('');
+    return '<div class="hero"><div class="hero-top"><div><div class="lbl2" style="color:#7FD3D6">Level ' + lv.n + ' · ' + esc(lv.name) + '</div><h2>' + (st.played ? 'Back on Dalal Street, ' : 'Welcome, ') + esc(u.name.split(' ')[0]) + '</h2>' +
+      '<div class="xp dark"><i style="width:' + lv.pct + '%"></i></div></div>' +
+      '<div class="clock"><small>Today\'s entries close in</small><b id="cd" data-t="' + lock.getTime() + '">' + countdown(lock.getTime() - Date.now()) + '</b><small>' + esc(fmtTs(lock)) + ' · market open</small></div></div>' +
+      (live ? '<div class="lbl2" style="color:#7FD3D6;margin-top:14px">Your running contests</div><div class="lvrow">' + live + '</div>' : '') +
+      '<div class="lbl2" style="color:#7FD3D6;margin-top:14px">' + (D.entries.length ? 'Play again' : 'Quick start') + '</div><div class="qprow">' + quick + '</div></div>';
+  }
+  // Show each newly finished contest once, with the result.
+  function seenKey() { return 'dsl.seen.' + (D.user ? D.user.id : ''); }
+  function showResults() {
+    if (!me() || draft || !$('#modal').hidden) return;
+    var seen = {}; try { seen = JSON.parse(localStorage.getItem(seenKey()) || '{}'); } catch (e) { seen = {}; }
+    var fresh = D.entries.filter(function (e) { return e.c.status === 'settled' && !seen[e.contest_id] && Date.now() - new Date(e.c.settled_at).getTime() < 7 * 864e5; });
+    D.entries.forEach(function (e) { if (e.c.status === 'settled') seen[e.contest_id] = 1; });
+    try { localStorage.setItem(seenKey(), JSON.stringify(seen)); } catch (x) { /* ignore */ }
+    if (!fresh.length) return;
+    var e = fresh.slice().sort(function (a, b) { return b.prize - a.prize || a.rank - b.rank; })[0], c = e.c, r = E.returnPct(Number(e.value), c.coins), won = e.prize > 0;
+    var conf = won ? '<div class="confetti" aria-hidden="true">' + Array.from({ length: 36 }, function (_, i) { return '<i style="left:' + (i * 2.8 % 100) + '%;animation-delay:' + (i % 9) * 0.12 + 's;background:' + ['#3C9A08', '#7FD3D6', '#F4D35E', '#1D5FA8', '#D2452F'][i % 5] + '"></i>'; }).join('') + '</div>' : '';
+    modal(conf + '<div class="result"><div class="lbl2">' + esc(cname(c)) + '</div><div class="rank">' + (e.rank === 1 ? '1st' : e.rank === 2 ? '2nd' : e.rank === 3 ? '3rd' : e.rank + 'th') + '<small> of ' + c.joined + '</small></div>' +
+      (won ? '<p class="prize">You won ' + inr(e.prize) + '</p><p class="muted">It is already in your wallet.</p>' : '<p class="muted" style="font-size:16px">No prize this time.</p>') +
+      '<div class="facts" style="margin-top:12px">' + fact('Your return', pct(r)) + fact('Portfolio', num(Number(e.value), 2)) + fact('Settled on', fmtDate(c.settle_date)) + '</div>' +
+      (fresh.length > 1 ? '<p class="muted small">' + (fresh.length - 1) + ' more result(s) are in My Contests.</p>' : '') +
+      '<div class="row" style="justify-content:center;margin-top:10px"><button data-close>Close</button><button data-act="detail" data-id="' + c.id + '">See leaderboard</button><button class="primary" data-act="again" data-id="' + c.id + '">Play again</button></div></div>');
+  }
+  function playAgain(cid) {
+    var e = D.entries.find(function (x) { return x.contest_id === cid; }); if (!e || !P) return;
+    var c = e.c;
+    if (c.kind === 'custom') startDraft('custom', c.entry, c.duration, { private: true, size: c.size });
+    else startDraft(c.kind, c.entry, c.duration, { private: c.private });
+    if (!draft) return;
+    var lp = lastPortfolio(e); if (lp) applyWeights(lp);
+    view = 'play'; render(); window.scrollTo(0, 0); toast('Same contest, same stocks at today\'s prices. Change anything before you confirm.');
+  }
+  function leadersHtml() {
+    var rows = LB[lbDays];
+    var head = '<div class="lbl2">Leaderboard</div><h2 class="big">Top traders · ' + (lbDays === 7 ? 'this week' : lbDays === 30 ? 'this month' : 'all time') + '</h2><div class="filters">' + seg('lb', [['7', 'This week'], ['30', 'This month'], ['0', 'All time']], String(lbDays || 0)) + '</div>';
+    if (!rows) return head + '<div class="panel empty"><span>Loading…</span></div>';
+    if (!rows.length) return head + '<div class="panel empty"><b>No finished contests yet</b><span>Finish a contest to appear here.</span><button class="primary" data-act="go" data-v="play">Play now</button></div>';
+    var mine = rows.find(function (r) { return r.is_me; });
+    return head + (mine ? '<div class="notice ok">You are <b>#' + mine.pos + '</b> with ' + num(mine.points) + ' points.</div>' : '<div class="notice">You are not on this board yet. Finish a contest to get points.</div>') +
+      '<div class="tbl"><table><thead><tr><th>#</th><th>Player</th><th class="num">Points</th><th class="num">Contests</th><th class="num">Prizes</th><th class="num">Podiums</th><th class="num">Best return</th></tr></thead><tbody>' +
+      rows.map(function (r) { return '<tr class="' + (r.is_me ? 'me' : '') + '"><td>' + (r.pos <= 3 ? ['🥇', '🥈', '🥉'][r.pos - 1] : r.pos) + '</td><td>' + esc(r.name) + (r.is_me ? ' (you)' : '') + '</td><td class="num"><b>' + num(r.points) + '</b></td><td class="num">' + r.played + '</td><td class="num">' + r.wins + '</td><td class="num">' + r.top3 + '</td><td class="num">' + pct(Number(r.best_return)) + '</td></tr>'; }).join('') +
+      '</tbody></table></div><p class="muted small" style="margin-top:8px">Points for each finished contest: 100 for first place down to 0 for last, by position among the players who joined. Skill counts more than spending: a ₹49 contest and a ₹1,000 contest score the same.</p>';
+  }
+  function loadLeaders() {
+    var d = lbDays;
+    return q(sb.rpc('dsl_leaderboard', { p_days: d || null })).then(function (r) { LB[d] = r; if (view === 'leaders') render(); }, fail);
+  }
+  // ---------- responsible play ----------
+  function limitInfo() {
+    var p = me() || {}, now = Date.now(), nextAt = p.day_limit_next_at ? new Date(p.day_limit_next_at).getTime() : null;
+    var limit = nextAt && nextAt <= now ? p.day_limit_next : p.day_limit;
+    var start = new Date(E.istToday() + 'T00:00:00+05:30').getTime();
+    var spent = D.txns.reduce(function (a, t) { return (t.type === 'entry' || t.type === 'entry_refund') && new Date(t.ts).getTime() >= start ? a - t.amt : a; }, 0);
+    return { limit: limit == null ? null : limit, spent: spent, pending: nextAt && nextAt > now ? { to: p.day_limit_next, at: nextAt } : null };
+  }
+  function recordHtml(sum) {
+    var paid = -(sum('entry') + sum('entry_refund')), won = sum('prize'), net = won - paid;
+    return '<div class="panel" style="margin-bottom:14px"><h3 class="sec" style="margin-top:0">Your record</h3><div class="tiles" style="margin-bottom:0">' + fact('Entries paid', inr(paid)) + fact('Prizes won', inr(won)) + fact('Net result', '<span class="' + (net > 0 ? 'up' : net < 0 ? 'down' : '') + '">' + (net > 0 ? '+' : '') + inr(net) + '</span>', 'Prizes minus entries, all time') + '</div></div>';
+  }
+  function limitHtml() {
+    var l = limitInfo();
+    return '<div class="panel" style="margin-bottom:14px"><h3 class="sec" style="margin-top:0">Daily entry limit</h3><p class="muted" style="margin-top:0">Set the most you want to spend on entries in a day. Lowering it works at once; raising or removing it takes effect after 24 hours.</p>' +
+      '<div class="facts">' + fact('Your limit', l.limit == null ? 'No limit' : inr(l.limit)) + fact('Spent today', inr(l.spent)) + (l.pending ? fact('Change pending', l.pending.to == null ? 'No limit' : inr(l.pending.to), 'From ' + fmtTs(l.pending.at)) : '') + '</div>' +
+      '<form class="row" id="limitForm" novalidate><input name="lim" type="number" min="49" max="100000" step="1" inputmode="numeric" placeholder="e.g. 200" style="width:140px"><button class="primary" type="submit">Save limit</button>' + (l.limit != null ? '<button type="button" data-act="noLimit">Remove limit</button>' : '') + '</form></div>';
   }
 
   // ---------- rules ----------
@@ -555,6 +756,7 @@
   // ---------- events ----------
   function go(v) {
     view = v; render(); window.scrollTo(0, 0);
+    if (v === 'leaders' && me()) loadLeaders();
     if (v === 'owner' && isOwner()) loadOwner().then(render, fail);
   }
   function signedOut() { D.user = null; D.profile = null; D.entries = []; D.txns = []; D.requests = []; D.balance = 0; O.report = null; O.requests = []; draft = null; view = 'play'; }
@@ -566,7 +768,18 @@
     else if (a === 'logout') act(function () { return sb.auth.signOut().then(signedOut); }, render);
     else if (a === 'refresh') act(reload, function () { render(); toast(P ? 'Prices updated.' : 'No prices yet.'); });
     else if (a === 'loginBox') loginBox();
-    else if (a === 'seg') { if (b.dataset.id === 'fk') fk = b.dataset.val; else fd = b.dataset.val; render(); }
+    else if (a === 'seg') {
+      if (b.dataset.id === 'lb') { lbDays = Number(b.dataset.val); render(); if (!LB[lbDays]) loadLeaders(); return; }
+      if (b.dataset.id === 'fk') fk = b.dataset.val; else fd = b.dataset.val; render();
+    }
+    else if (a === 'capF') { capF = b.dataset.c; render(); }
+    else if (a === 'mcap') { mcap = b.dataset.c; render(); }
+    else if (a === 'split') { splitEqually(); render(); }
+    else if (a === 'reuse') { var lp = lastPortfolio(); if (lp) { applyWeights(lp); render(); toast('Your last portfolio, bought at today\'s prices.'); } }
+    else if (a === 'clearAll') { draft.h = {}; render(); }
+    else if (a === 'quick') { startDraft(b.dataset.k, Number(b.dataset.e), b.dataset.d); render(); window.scrollTo(0, 0); }
+    else if (a === 'again') { var mm = $('#modal'); if (!mm.hidden) { mm.hidden = true; $('#modalBody').innerHTML = ''; } playAgain(Number(b.dataset.id)); }
+    else if (a === 'noLimit') act(function () { return q(sb.rpc('dsl_set_day_limit', { p_limit: null })).then(function (r) { return reload().then(function () { return r; }); }); }, function (r) { render(); toast(r.pending ? 'Your limit will be removed in 24 hours.' : 'Limit removed.'); });
     else if (a === 'play') { startDraft(fk, Number(b.dataset.entry), fd); render(); window.scrollTo(0, 0); }
     else if (a === 'copy') copyText(b.dataset.text);
     else if (a === 'customGo') {
@@ -580,7 +793,7 @@
     else if (a === 'drop') { delete draft.h[b.dataset.s]; render(); }
     else if (a === 'cancelDraft') { draft = null; render(); }
     else if (a === 'confirmJoin') confirmJoin();
-    else if (a === 'detail') detailBox(Number(b.dataset.id));
+    else if (a === 'detail') { var md = $('#modal'); if (!md.hidden) { md.hidden = true; $('#modalBody').innerHTML = ''; } detailBox(Number(b.dataset.id)); }
     else if (a === 'share') { var e = D.entries.find(function (x) { return x.contest_id === Number(b.dataset.id); }); if (e) shareBox(e.c); }
     else if (a === 'addMoney') addMoneyBox();
     else if (a === 'withdraw') withdrawBox();
@@ -594,6 +807,11 @@
   document.addEventListener('submit', function (ev) {
     var f = ev.target;
     if (f.id === 'signup') { ev.preventDefault(); doSignup(f); }
+    else if (f.id === 'limitForm') {
+      ev.preventDefault(); var n = Number(f.lim.value);
+      if (!(n >= 49 && n <= 100000) || n !== Math.floor(n)) return toast('Choose a whole amount between ₹49 and ₹1,00,000.', true);
+      act(function () { return q(sb.rpc('dsl_set_day_limit', { p_limit: n })).then(function (r) { return reload().then(function () { return r; }); }); }, function (r) { render(); toast(r.pending ? 'A higher limit takes effect in 24 hours.' : 'Daily limit set to ' + inr(n) + '.'); });
+    }
     else if (f.id === 'upiForm' && isOwner()) {
       ev.preventDefault(); var upi = f.upi.value.trim(), payee = f.payee.value.trim();
       if (!/^[A-Za-z0-9._-]{2,}@[A-Za-z][A-Za-z0-9]{1,}$/.test(upi)) return toast('Enter a valid UPI ID, like name@bank.', true);
@@ -610,6 +828,7 @@
   document.addEventListener('change', function (ev) {
     if (ev.target.id === 'secSel') { sec = ev.target.value; $('#stockRail').innerHTML = railList(); }
     else if (ev.target.id === 'cEntry') { cEntry = Number(ev.target.value); render(); }
+    else if (ev.target.id === 'mSort') { msort = ev.target.value; $('#mktBody').innerHTML = marketRows(); }
   });
 
   // ---------- start ----------
@@ -626,16 +845,18 @@
   render();
   sb.auth.getSession().then(function (r) {
     D.user = r.data && r.data.session ? r.data.session.user : null;
-    return reload();
+    return Promise.all([reload(), loadUniverse()]);
   }).then(function () {
     booted = true;
     if (me()) sb.rpc('dsl_touch').then(function () {});
-    afterLogin();
+    afterLogin(); showResults();
   }, function (e) { booted = true; render(); fail(e); });
   // Quiet refresh every minute while the page is open and nobody is typing.
   setInterval(function () {
     var ae = document.activeElement;
     if (document.hidden || busy || !booted || !$('#modal').hidden || (ae && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName))) return;
-    reload().then(render, function () {});
+    reload().then(function () { render(); showResults(); }, function () {});
   }, 60 * 1000);
+  // Entries-close countdown on the home summary.
+  setInterval(function () { var el = document.getElementById('cd'); if (el) el.textContent = countdown(Number(el.dataset.t) - Date.now()); }, 1000);
 })();

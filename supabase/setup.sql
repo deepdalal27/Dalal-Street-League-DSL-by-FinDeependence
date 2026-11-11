@@ -51,6 +51,10 @@ alter table public.dsl_contests add constraint dsl_contests_shape check (kind in
 alter table public.dsl_profiles add column if not exists ref_code text unique;
 alter table public.dsl_profiles add column if not exists referred_by uuid references public.dsl_profiles (id);
 update public.dsl_profiles set ref_code = upper(substr(md5(id::text || random()::text), 1, 8)) where ref_code is null;
+-- Player's own daily entry limit (responsible play). Lowering takes effect at once; raising or removing it waits 24 hours.
+alter table public.dsl_profiles add column if not exists day_limit int;
+alter table public.dsl_profiles add column if not exists day_limit_next int;
+alter table public.dsl_profiles add column if not exists day_limit_next_at timestamptz;
 create index if not exists dsl_contests_match on public.dsl_contests (kind, entry, duration, end_date) where status = 'open';
 
 create table if not exists public.dsl_entries (
@@ -197,6 +201,50 @@ begin
   return v_id;
 end $$;
 
+-- ---------- responsible play ----------
+create or replace function public.dsl_effective_limit(p_uid uuid) returns int language sql stable security definer set search_path = public as $$
+  select case when day_limit_next_at is not null and day_limit_next_at <= now() then day_limit_next else day_limit end from dsl_profiles where id = p_uid;
+$$;
+create or replace function public.dsl_spent_today(p_uid uuid) returns int language sql stable security definer set search_path = public as $$
+  select coalesce(-sum(amt), 0)::int from dsl_txns where uid = p_uid and type in ('entry', 'entry_refund') and ts >= (dsl_today()::timestamp at time zone 'Asia/Kolkata');
+$$;
+-- p_limit: rupees of entries a day (49 to 1,00,000), or null for no limit.
+create or replace function public.dsl_set_day_limit(p_limit int) returns jsonb language plpgsql security definer set search_path = public as $$
+declare v_uid uuid := auth.uid(); v_cur int;
+begin
+  if v_uid is null or not exists (select 1 from dsl_profiles where id = v_uid) then raise exception 'Please log in again.'; end if;
+  if p_limit is not null and (p_limit < 49 or p_limit > 100000) then raise exception 'Choose a daily limit between 49 and 1,00,000, or no limit.'; end if;
+  v_cur := dsl_effective_limit(v_uid);
+  if p_limit is not null and (v_cur is null or p_limit <= v_cur) then
+    update dsl_profiles set day_limit = p_limit, day_limit_next = null, day_limit_next_at = null where id = v_uid;
+    return jsonb_build_object('limit', p_limit, 'pending', false);
+  end if;
+  update dsl_profiles set day_limit = v_cur, day_limit_next = p_limit, day_limit_next_at = now() + interval '24 hours' where id = v_uid;
+  return jsonb_build_object('limit', v_cur, 'pending', true, 'next', p_limit, 'from', now() + interval '24 hours');
+end $$;
+
+-- ---------- leaderboard ----------
+-- Points per finished contest: 100 for first place down to 0 for last, by position among the players who joined.
+-- Names are shortened (first name + initial) so players are not identified to strangers.
+create or replace function public.dsl_leaderboard(p_days int default 7) returns table (pos bigint, name text, is_me boolean, played bigint, wins bigint, top3 bigint, points bigint, prizes bigint, best_return numeric)
+language sql stable security definer set search_path = public as $$
+  with rows as (
+    select e.uid, e.prize, e.rank, c.joined, c.coins, e.value
+    from dsl_entries e join dsl_contests c on c.id = e.contest_id
+    where c.status = 'settled' and c.joined >= 2 and (p_days is null or c.settle_date > dsl_today() - p_days)
+  ), agg as (
+    select uid, count(*) played, count(*) filter (where prize > 0) wins, count(*) filter (where rank <= 3 and joined >= 5) top3,
+      sum(round(100.0 * (joined - rank) / (joined - 1)))::bigint points, sum(prize)::bigint prizes, max(round((value / coins - 1) * 100, 2)) best_return
+    from rows group by uid
+  )
+  select row_number() over (order by a.points desc, a.wins desc, a.best_return desc), split_part(p.name, ' ', 1) || coalesce(' ' || nullif(left(split_part(p.name, ' ', 2), 1), '') || '.', ''),
+    a.uid = auth.uid(), a.played, a.wins, a.top3, a.points, a.prizes, a.best_return
+  from agg a join dsl_profiles p on p.id = a.uid
+  where auth.uid() is not null
+  order by a.points desc, a.wins desc, a.best_return desc
+  limit 100;
+$$;
+
 -- ---------- contests ----------
 create or replace function public.dsl_challenge_info(p_code text) returns jsonb language sql stable security definer set search_path = public as $$
   select jsonb_build_object('kind', c.kind, 'entry', c.entry, 'duration', c.duration, 'end_date', c.end_date, 'size', c.size, 'joined', c.joined, 'private', c.private,
@@ -257,6 +305,9 @@ begin
   v_cost := round(v_cost, 2);
   if v_cost > v_coins then raise exception 'Prices have moved and your picks now cost more than your coins. Reduce a stock and try again.'; end if;
   if dsl_balance(v_uid) < p_entry then raise exception 'Not enough money in your wallet.'; end if;
+  if dsl_effective_limit(v_uid) is not null and dsl_spent_today(v_uid) + p_entry > dsl_effective_limit(v_uid) then
+    raise exception 'This entry would take you over your daily limit of %. You can change the limit in your wallet.', dsl_effective_limit(v_uid);
+  end if;
 
   if p_code is not null then
     v_cid := v_c.id;
@@ -448,7 +499,7 @@ begin
     execute format('revoke execute on function %s from public, anon, authenticated', f.sig);
     if f.proname in ('dsl_apply_settlement', 'dsl_lock_due') then
       execute format('grant execute on function %s to service_role', f.sig);
-    elsif f.proname in ('dsl_make_owner', 'dsl_new_user', 'dsl_balance') then
+    elsif f.proname in ('dsl_make_owner', 'dsl_new_user', 'dsl_balance', 'dsl_effective_limit', 'dsl_spent_today') then
       null;                                                     -- SQL Editor / internal only
     elsif f.proname in ('dsl_mobile_taken', 'dsl_latest_px', 'dsl_today', 'dsl_end_date', 'dsl_rake_bp', 'dsl_coins', 'dsl_lock_at') then
       execute format('grant execute on function %s to anon, authenticated, service_role', f.sig);

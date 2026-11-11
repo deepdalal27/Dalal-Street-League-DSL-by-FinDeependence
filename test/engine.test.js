@@ -174,3 +174,20 @@ test('settlement job: closes entries first, then settles live contests with engi
   const prize = E.prizePlan(3, 99, 'week').prizes[0];
   assert.deepEqual(calls[1], ['dsl_apply_settlement', { p_cid: 1, p_date: '2026-11-12', p_rows: [{ entry_id: 12, value: 100200, rank: 1, prize }, { entry_id: 11, value: 99900, rank: 2, prize: 0 }, { entry_id: 13, value: 99800, rank: 3, prize: 0 }] }]);
 });
+
+test('NSE index list parser reads symbols, names, industry and the cap group', () => {
+  const csv = '﻿Company Name,Industry,Symbol,Series,ISIN Code\r\n' +
+    'Reliance Industries Ltd.,Oil Gas & Consumable Fuels,RELIANCE,EQ,INE002A01018\r\n' +
+    '"Mahindra & Mahindra, Ltd.",Automobile and Auto Components,M&M,EQ,INE101A01026\r\n' +
+    'Some Bond Ltd.,Financial Services,SOMEBOND,N1,INE000000000\r\n';
+  assert.deepEqual(L.parseIndexCsv(csv, 'L'), [
+    { s: 'RELIANCE', n: 'Reliance Industries', sec: 'Oil Gas & Consumable Fuels', c: 'L' },
+    { s: 'M&M', n: 'Mahindra & Mahindra', sec: 'Automobile and Auto Components', c: 'L' }
+  ]);
+  assert.throws(() => L.parseIndexCsv('<html>blocked</html>', 'M'));
+  assert.deepEqual(L.splitCsv('a,"b, c","d ""e"""'), ['a', 'b, c', 'd "e"']);
+});
+
+test('built-in stock list has unique symbols and a cap group for each', () => {
+  for (const u of U) assert.ok(['L', 'M', 'S'].includes(u.c), u.s);
+});

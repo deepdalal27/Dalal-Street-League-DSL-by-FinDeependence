@@ -7,8 +7,9 @@ Always brand as **FinDeependence**, with the round logo (`site/logo_circle.png`)
 - `site/js/app.js` — the app (Supabase client): sign-up, wallet, lobby, portfolio builder, leaderboards, owner control room.
 - `site/js/config.js` — Supabase URL and anon key (public). The service key is only a GitHub secret (`SUPABASE_SERVICE_KEY`); never commit it.
 - `supabase/setup.sql` — tables, row-level security and every money/contest function. Idempotent. `dsl_rake_bp()` and `dsl_coins()` must match the engine (a test checks this). After any change the owner must re-run the file in the Supabase SQL Editor; say so in your summary.
-- `site/data/universe.js` — stocks players can pick (NSE symbols; `p` is a sample price only).
+- `site/data/universe.json` — the Nifty 500 with cap group `c` (L/M/S), written daily by the sync. `site/data/universe.js` is the built-in fallback (`p` is a sample price only).
 - `scripts/sync-prices.js` + `scripts/prices-lib.js` — NSE closes + delayed quotes to `site/data/prices.json` and the database. `scripts/settle.js` — settlement and refunds via `scripts/supabase-lib.js`.
 - No build step. `npm test` runs the unit tests; `npm start` serves `site/`.
 - Money is whole rupees in `dsl_txns`; a wallet balance is always the sum of its rows. Never add a way for the browser to write tables directly.
 - Contest model: entries close at `lock_at` (09:15 IST next weekday); `dsl_lock_due()` starts contests with 2+ players and refunds the rest; prizes are `E.prizePlan(joined, entry, duration)`.
+- Engagement features stay honest: no fake scarcity or countdowns, no prompts to chase losses; the daily entry limit (`dsl_set_day_limit`) must keep working.

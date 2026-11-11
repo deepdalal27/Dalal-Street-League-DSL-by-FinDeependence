@@ -1,5 +1,8 @@
-/* Dalal Street League · stocks players can pick (NSE symbols). `p` is a SAMPLE price used only until the first real price sync. */
+/* Dalal Street League · built-in stock list, used only until the daily sync has written site/data/universe.json (the Nifty 500).
+   `p` is a SAMPLE price for tests. `c` is the market-cap group: L = large, M = mid, S = small. */
 (function (root) {
+  var MID = ['IDEA','YESBANK','SAIL','IDFCFIRSTB','FEDERALBNK','ASHOKLEY','MRF','PERSISTENT','MUTHOOTFIN','POLYCAB','DIXON','PAYTM','NYKAA','POLICYBZR','LUPIN','SUZLON','NHPC','BHEL','IRCTC'];
+  var SMALL = [];
   var U = [
     ['RELIANCE','Reliance Industries','Energy',1290],['TCS','Tata Consultancy Services','IT',3450],['HDFCBANK','HDFC Bank','Banks',1720],['ICICIBANK','ICICI Bank','Banks',1310],['INFY','Infosys','IT',1580],
     ['BHARTIARTL','Bharti Airtel','Telecom',1690],['SBIN','State Bank of India','Banks',820],['ITC','ITC','FMCG',430],['LT','Larsen & Toubro','Infra',3580],['HINDUNILVR','Hindustan Unilever','FMCG',2390],
@@ -22,6 +25,6 @@
     ['MUTHOOTFIN','Muthoot Finance','Finance',2400],['NAUKRI','Info Edge (Naukri)','Internet',1450],['PAYTM','One97 Communications (Paytm)','Internet',950],['NYKAA','FSN E-Commerce (Nykaa)','Internet',200],['POLICYBZR','PB Fintech (Policybazaar)','Internet',1800],
     ['SUZLON','Suzlon Energy','Power',60],['IDEA','Vodafone Idea','Telecom',8],['YESBANK','Yes Bank','Banks',20],['NHPC','NHPC','Power',85],['SAIL','SAIL','Metals',130],
     ['BHEL','BHEL','Capital Goods',250],['IDFCFIRSTB','IDFC First Bank','Banks',72],['FEDERALBNK','Federal Bank','Banks',200],['ASHOKLEY','Ashok Leyland','Auto',135],['MRF','MRF','Auto',135000]
-  ].map(function (r) { return { s: r[0], n: r[1], sec: r[2], p: r[3] }; });
+  ].map(function (r) { return { s: r[0], n: r[1], sec: r[2], p: r[3], c: MID.indexOf(r[0]) >= 0 ? 'M' : SMALL.indexOf(r[0]) >= 0 ? 'S' : 'L' }; });
   if (typeof module === 'object' && module.exports) module.exports = U; else root.DSL_UNIVERSE = U;
 })(typeof self !== 'undefined' ? self : this);

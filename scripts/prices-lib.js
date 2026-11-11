@@ -54,4 +54,52 @@ async function fetchQuote(symbol) {
   try { return parseYahooChart(JSON.parse(r.body)); } catch (e) { return null; }
 }
 
-module.exports = { bhavUrl, parseBhavcopy, fetchBhavcopy, parseYahooChart, fetchQuote };
+// ---- Stock list: NSE index constituents ----
+// Large cap = Nifty 100, Mid cap = Nifty Midcap 150, Small cap = Nifty Smallcap 250 (together the Nifty 500).
+// These follow the SEBI / AMFI definition: top 100 companies by market value are large, 101 to 250 mid, 251 onwards small.
+const INDEX_LISTS = [['L', 'ind_nifty100list.csv'], ['M', 'ind_niftymidcap150list.csv'], ['S', 'ind_niftysmallcap250list.csv']];
+const INDEX_HOSTS = ['https://nsearchives.nseindia.com/content/indices/', 'https://archives.nseindia.com/content/indices/', 'https://www.niftyindices.com/IndexConstituent/'];
+
+// CSV columns: Company Name,Industry,Symbol,Series,ISIN Code. Company names can contain commas inside quotes.
+function splitCsv(line) {
+  const out = []; let cur = '', q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') { if (q && line[i + 1] === '"') { cur += '"'; i++; } else q = !q; }
+    else if (ch === ',' && !q) { out.push(cur.trim()); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur.trim());
+  return out;
+}
+function parseIndexCsv(csv, cap) {
+  const lines = String(csv).replace(/^﻿/, '').split(/\r?\n/).filter((l) => l.trim());
+  const head = splitCsv(lines[0] || '').map((h) => h.toUpperCase());
+  const iN = head.indexOf('COMPANY NAME'), iI = head.indexOf('INDUSTRY'), iS = head.indexOf('SYMBOL'), iSer = head.indexOf('SERIES');
+  if (iN < 0 || iS < 0) throw new Error('not an index list');
+  const out = [];
+  for (let k = 1; k < lines.length; k++) {
+    const c = splitCsv(lines[k]);
+    if (!c[iS] || (iSer >= 0 && c[iSer] && c[iSer] !== 'EQ')) continue;
+    out.push({ s: c[iS], n: c[iN].replace(/,?\s+(Ltd|Limited)\.?$/i, '').trim(), sec: iI >= 0 && c[iI] ? c[iI] : 'Other', c: cap });
+  }
+  return out;
+}
+async function fetchUniverse() {
+  const seen = new Set(), list = [];
+  for (const [cap, file] of INDEX_LISTS) {
+    let got = null, last = '';
+    for (const host of INDEX_HOSTS) {
+      try {
+        const r = await get(host + file, 'text/csv');
+        if (r.status === 200) { got = parseIndexCsv(r.body, cap); if (got.length) break; }
+        last = host + ' ' + r.status;
+      } catch (e) { last = host + ' ' + e.message; }
+    }
+    if (!got || !got.length) throw new Error(`${file}: ${last}`);
+    for (const u of got) if (!seen.has(u.s)) { seen.add(u.s); list.push(u); }
+  }
+  return list;
+}
+
+module.exports = { bhavUrl, parseBhavcopy, fetchBhavcopy, parseYahooChart, fetchQuote, splitCsv, parseIndexCsv, fetchUniverse };

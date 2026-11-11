@@ -1,20 +1,36 @@
 // Run by GitHub Actions: refreshes site/data/prices.json for Dalal Street League.
 //   closes  -> official NSE closing prices by date (kept for 75 days; contests are settled on these)
 //   quotes  -> delayed quotes during market hours (only used as the buying price)
+//   site/data/universe.json -> the stocks players can pick (Nifty 500) with Large / Mid / Small cap, refreshed once a day
 const fs = require('fs');
 const path = require('path');
 const E = require('../site/js/engine.js');
-const U = require('../site/data/universe.js');
+const FALLBACK = require('../site/data/universe.js');
 const L = require('./prices-lib.js');
 const DB = require('./supabase-lib.js');
 
 const FILE = path.join(__dirname, '..', 'site', 'data', 'prices.json');
+const UFILE = path.join(__dirname, '..', 'site', 'data', 'universe.json');
 const KEEP_DAYS = 75, LOOK_BACK = 10;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
-  const symbols = U.map((u) => u.s);
+  // 0. Stock list. Refreshed when it is a day old; on failure the last good list (or the built-in one) stays.
+  const oldU = fs.existsSync(UFILE) ? JSON.parse(fs.readFileSync(UFILE, 'utf8')) : null;
+  let U = oldU ? oldU.stocks : FALLBACK;
+  if (!oldU || Date.now() - new Date(oldU.updated).getTime() > 20 * 3600e3) {
+    try {
+      const list = await L.fetchUniverse();
+      if (list.length < 400) throw new Error('only ' + list.length + ' stocks');
+      U = list;
+      fs.writeFileSync(UFILE, JSON.stringify({ updated: new Date().toISOString(), source: 'NSE: Nifty 100 (Large), Nifty Midcap 150 (Mid), Nifty Smallcap 250 (Small)', stocks: list }));
+      console.log(`Stock list: ${list.length} stocks (${['L', 'M', 'S'].map((c) => list.filter((u) => u.c === c).length).join(' / ')} large / mid / small)`);
+    } catch (e) { console.log('Stock list not refreshed: ' + e.message); }
+  }
   const old = fs.existsSync(FILE) ? JSON.parse(fs.readFileSync(FILE, 'utf8')) : {};
+  // Keep pricing every stock priced before too, so portfolios already in contests can always be valued.
+  const lastOld = old.closes ? Object.keys(old.closes).sort().pop() : null;
+  const symbols = Array.from(new Set(U.map((u) => u.s).concat(lastOld ? Object.keys(old.closes[lastOld]) : [])));
   const data = { source: 'nse', updated: old.updated || null, closes: old.source === 'nse' && old.closes ? old.closes : {}, quotes: old.source === 'nse' ? old.quotes || null : null };
   const before = JSON.stringify(data);
   const today = E.istToday();
@@ -38,8 +54,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const ist = new Date(Date.now() + 5.5 * 3600e3), mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
   if (last && E.isWeekday(today) && last < today && mins >= 9 * 60 + 15 && mins <= 16 * 60) {
     const px = {}; let newest = 0;
-    for (let i = 0; i < symbols.length; i += 8) {
-      const res = await Promise.all(symbols.slice(i, i + 8).map((s) => L.fetchQuote(s).catch(() => null)));
+    for (let i = 0; i < symbols.length; i += 16) {
+      const res = await Promise.all(symbols.slice(i, i + 16).map((s) => L.fetchQuote(s).catch(() => null)));
       res.forEach((q, k) => { if (q && E.istToday(q.time) === today) { px[symbols[i + k]] = q.price; newest = Math.max(newest, q.time); } });
       await sleep(250);
     }

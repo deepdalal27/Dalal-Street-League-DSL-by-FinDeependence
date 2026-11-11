@@ -40,7 +40,7 @@ jobs:
       - name: Save updated prices
         if: always()
         run: |
-          git add site/data/prices.json 2>/dev/null || true
+          git add site/data/prices.json site/data/universe.json 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
